@@ -2509,6 +2509,93 @@ pub async fn export_unified_multisheet_xlsx(
     .map_err(|e| format!("export_unified_multisheet_xlsx join error: {e}"))?
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RawField {
+    pub column_name: String,
+    pub value: String,
+    pub inferred_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileRowRawDetails {
+    pub file_name: String,
+    pub file_path: String,
+    pub row_num: i64,
+    pub fields: Vec<RawField>,
+}
+
+#[tauri::command]
+pub async fn get_row_raw_details(
+    target: FileTarget,
+    row_num: i64,
+) -> Result<FileRowRawDetails, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let file_name = Path::new(&target.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| target.path.clone());
+        let sheet_name = target.sheet.clone().unwrap_or_default();
+
+        let db_path = if let Some(ref p) = target.cache_db_path {
+            let candidate = PathBuf::from(p);
+            if candidate.exists() {
+                candidate
+            } else {
+                db::cache_db_path(Path::new(&target.path), &sheet_name)
+                    .unwrap_or_else(|_| PathBuf::from(p))
+            }
+        } else {
+            db::cache_db_path(Path::new(&target.path), &sheet_name)
+                .map_err(|e| format!("Could not determine cache path: {e}"))?
+        };
+
+        if !db_path.exists() {
+            return Err(format!("Cache DB not found at {}", db_path.display()));
+        }
+
+        let conn = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(|e| format!("Could not open cache DB: {e}"))?;
+
+        let columns = db::load_columns(&conn)
+            .map_err(|e| format!("Could not load columns: {e}"))?;
+
+        let col_names = columns
+            .iter()
+            .map(|c| format!("\"{}\"", c.sql_name))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        let sql = format!("SELECT {col_names} FROM rows WHERE row_num = ?1 LIMIT 1");
+        let mut stmt = conn.prepare(&sql).map_err(|e| format!("SQL prepare error: {e}"))?;
+        let mut rows = stmt.query(rusqlite::params![row_num]).map_err(|e| format!("SQL query error: {e}"))?;
+
+        let mut fields = Vec::with_capacity(columns.len());
+        if let Some(row) = rows.next().map_err(|e| format!("Row error: {e}"))? {
+            for (idx, col) in columns.iter().enumerate() {
+                let val: Option<String> = row.get(idx).unwrap_or(None);
+                fields.push(RawField {
+                    column_name: col.original_name.clone(),
+                    value: val.unwrap_or_default(),
+                    inferred_type: col.inferred_type.clone(),
+                });
+            }
+        } else {
+            return Err(format!("Row {row_num} not found in database"));
+        }
+
+        Ok(FileRowRawDetails {
+            file_name,
+            file_path: target.path,
+            row_num,
+            fields,
+        })
+    })
+    .await
+    .map_err(|e| format!("get_row_raw_details join error: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2525,6 +2612,54 @@ mod tests {
         let semantic_guard = state.semantic.lock().unwrap();
         assert!(!release_ai_models(&state));
         drop(semantic_guard);
+    }
+
+    #[test]
+    fn test_get_row_raw_details() {
+        tauri::async_runtime::block_on(async {
+            let temp_dir = std::env::temp_dir().join(format!("lp_raw_test_{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&temp_dir);
+            let db_path = temp_dir.join("sample.sqlite");
+
+            let conn = Connection::open(&db_path).unwrap();
+            let cols = vec![
+                ColumnMeta {
+                    sql_name: "col_0".into(),
+                    original_name: "UserPrincipalName".into(),
+                    col_index: 0,
+                    inferred_type: "text".into(),
+                },
+                ColumnMeta {
+                    sql_name: "col_1".into(),
+                    original_name: "IPAddress".into(),
+                    col_index: 1,
+                    inferred_type: "ip".into(),
+                },
+            ];
+            db::create_schema(&conn, &cols).unwrap();
+            conn.execute(
+                "INSERT INTO rows (row_num, col_0, col_1) VALUES (42, 'alice@domain.local', '10.0.0.99')",
+                [],
+            )
+            .unwrap();
+            drop(conn);
+
+            let target = FileTarget {
+                path: "activity.xlsx".to_string(),
+                sheet: Some("Activity".to_string()),
+                cache_db_path: Some(db_path.to_string_lossy().to_string()),
+            };
+
+            let details = get_row_raw_details(target, 42).await.expect("should retrieve raw row details");
+            assert_eq!(details.row_num, 42);
+            assert_eq!(details.fields.len(), 2);
+            assert_eq!(details.fields[0].column_name, "UserPrincipalName");
+            assert_eq!(details.fields[0].value, "alice@domain.local");
+            assert_eq!(details.fields[1].column_name, "IPAddress");
+            assert_eq!(details.fields[1].value, "10.0.0.99");
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        });
     }
 
     fn test_columns() -> Vec<ColumnMeta> {

@@ -108,6 +108,22 @@
   const gridActiveFilterBar = document.getElementById("grid-active-filter-bar");
   const gridActiveFilterLabel = document.getElementById("grid-active-filter-label");
   const gridClearFilterBtn = document.getElementById("grid-clear-filter-btn");
+  const gridReturnUnifiedBtn = document.getElementById("grid-return-unified-btn");
+  const gridReturnUnifiedIdx = document.getElementById("grid-return-unified-idx");
+  const unifiedQuickNav = document.getElementById("unified-quick-nav");
+  const unifiedLastRowBtn = document.getElementById("unified-last-row-btn");
+  const unifiedLastRowIdx = document.getElementById("unified-last-row-idx");
+  const unifiedJumpInput = document.getElementById("unified-jump-input");
+  const unifiedJumpGoBtn = document.getElementById("unified-jump-go-btn");
+  const unifiedDetailDrawer = document.getElementById("unified-detail-drawer");
+  const unifiedDrawerTitle = document.getElementById("unified-drawer-title");
+  const unifiedDrawerMeta = document.getElementById("unified-drawer-meta");
+  const unifiedDrawerFilter = document.getElementById("unified-drawer-filter");
+  const unifiedDrawerBody = document.getElementById("unified-drawer-body");
+  const unifiedDrawerCloseBtn = document.getElementById("unified-drawer-close-btn");
+  const unifiedDrawerBackdrop = document.getElementById("unified-drawer-backdrop");
+  const unifiedDrawerJumpBtn = document.getElementById("unified-drawer-jump-btn");
+  const unifiedDrawerCopyBtn = document.getElementById("unified-drawer-copy-btn");
   const correlationFileCount = document.getElementById("correlation-file-count");
   const correlationFilesList = document.getElementById("correlation-files-list");
   const correlationRefreshBtn = document.getElementById("correlation-refresh-btn");
@@ -168,6 +184,9 @@
   let isUnifiedCorrelatedMode = false;
   let unifiedCorrelatedRows = [];
   let unifiedCorrelatedLabel = "";
+  let savedUnifiedContext = null;
+  let activeDrawerRowData = null;
+  let activeDrawerRawDetails = null;
 
 
   // IOC filtering state
@@ -1105,7 +1124,32 @@
     return page;
   }
 
-  function renderUnifiedCorrelatedGrid(events, label) {
+  function scrollToUnifiedIndex(targetIdx) {
+    if (!table || !targetIdx) return;
+    requestAnimationFrame(() => {
+      setTimeout(() => {
+        try {
+          const rows = table.getRows();
+          const targetRow = rows.find((r) => r.getData()._unifiedIndex === targetIdx) || table.getRow(targetIdx);
+          if (targetRow) {
+            table.scrollToRow(targetRow, "center", false).then(() => {
+              if (typeof table.deselectRows === "function") table.deselectRows();
+              if (typeof targetRow.select === "function") targetRow.select();
+              const el = targetRow.getElement();
+              if (el) {
+                el.classList.add("analyst-row-flash");
+                setTimeout(() => el.classList.remove("analyst-row-flash"), 2200);
+              }
+            }).catch(() => {});
+          }
+        } catch (err) {
+          console.warn("Could not scroll to unified index:", targetIdx, err);
+        }
+      }, 60);
+    });
+  }
+
+  async function renderUnifiedCorrelatedGrid(events, label, targetScrollIndex = null) {
     if (!events || events.length === 0) {
       alert("No correlated events found to display.");
       return;
@@ -1115,12 +1159,21 @@
     unifiedCorrelatedRows = events;
     unifiedCorrelatedLabel = label || "Cross-File Unified Correlation";
 
+    const resolvedIndex = targetScrollIndex || (savedUnifiedContext ? savedUnifiedContext.jumpedIndex : null);
+    savedUnifiedContext = {
+      events,
+      label: unifiedCorrelatedLabel,
+      jumpedIndex: resolvedIndex,
+      filterSearch: searchBox ? searchBox.value : "",
+    };
+
     switchTab("tab-grid");
 
     const uniqueFiles = new Set(events.map((e) => e.fileName || (e.path ? e.path.split(/[\\/]/).pop() : "File")));
     const fileCount = uniqueFiles.size;
 
     const tableData = events.map((ev, idx) => ({
+      id: idx + 1,
       _unifiedIndex: idx + 1,
       row_num: ev.rowNum,
       fileName: ev.fileName || (ev.path ? ev.path.split(/[\\/]/).pop() : "File"),
@@ -1137,17 +1190,45 @@
       {
         title: "#",
         field: "_unifiedIndex",
-        width: 65,
+        width: 75,
+        minWidth: 60,
+        hozAlign: "center",
+        headerHozAlign: "center",
         headerSort: true,
         frozen: true,
         sorter: "number",
+      },
+      {
+        title: "Actions",
+        width: 145,
+        minWidth: 135,
+        frozen: true,
+        hozAlign: "center",
+        headerHozAlign: "center",
+        headerSort: false,
+        formatter() {
+          return `
+            <div class="unified-action-cell">
+              <button type="button" class="btn-unified-detail" title="Quick inspect all raw columns for this row without leaving Unified View">👁️ Details</button>
+              <button type="button" class="btn-unified-jump" title="Jump to native file view at this row">🔍 Jump</button>
+            </div>
+          `;
+        },
+        cellClick(e, cell) {
+          const rowData = cell.getRow().getData();
+          const target = e.target;
+          if (target && target.classList.contains("btn-unified-detail")) {
+            openUnifiedRowDetailDrawer(rowData);
+          } else if (target && target.classList.contains("btn-unified-jump")) {
+            jumpToNativeFileRow(rowData.path, rowData.row_num, rowData._unifiedIndex);
+          }
+        },
       },
       {
         title: "📄 Source File",
         field: "fileName",
         width: 190,
         minWidth: 140,
-        frozen: true,
         headerSort: true,
         formatter(cell) {
           const val = cell.getValue() || "";
@@ -1159,7 +1240,6 @@
         field: "utcText",
         width: 190,
         minWidth: 150,
-        frozen: true,
         headerSort: true,
         sorter(a, b, aRow, bRow) {
           const ea = aRow.getData().epochMs || 0;
@@ -1212,33 +1292,34 @@
             .join("");
         },
       },
-      {
-        title: "Action",
-        width: 110,
-        hozAlign: "center",
-        headerSort: false,
-        formatter() {
-          return `<button type="button" class="btn-unified-jump" title="Switch to this file and view row">🔍 Jump to File</button>`;
-        },
-        cellClick(e, cell) {
-          const row = cell.getRow().getData();
-          jumpToNativeFileRow(row.path, row.row_num);
-        },
-      },
     ];
 
     if (table) {
       table.setColumns(unifiedColumns);
-      table.replaceData(tableData);
+      table.replaceData(tableData).then(() => {
+        if (resolvedIndex) {
+          scrollToUnifiedIndex(resolvedIndex);
+        }
+      });
     } else {
       table = new Tabulator("#grid", {
         data: tableData,
+        index: "_unifiedIndex",
         columns: unifiedColumns,
         layout: "fitDataFill",
         height: "100%",
         placeholder: "No matching rows",
       });
+      table.on("tableBuilt", () => {
+        if (resolvedIndex) {
+          scrollToUnifiedIndex(resolvedIndex);
+        }
+      });
     }
+
+    table.on("rowDblClick", (e, row) => {
+      openUnifiedRowDetailDrawer(row.getData());
+    });
 
     if (firstPageBtn) firstPageBtn.disabled = true;
     if (prevPageBtn) prevPageBtn.disabled = true;
@@ -1252,16 +1333,32 @@
       pageLabel.textContent = "All rows displayed";
     }
 
+    if (gridReturnUnifiedBtn) {
+      gridReturnUnifiedBtn.classList.add("hidden");
+    }
+
     if (gridActiveFilterBar && gridActiveFilterLabel) {
       gridActiveFilterLabel.textContent = `🌐 Unified View: ${label} (${events.length.toLocaleString()} events across ${fileCount} files)`;
       gridActiveFilterBar.classList.remove("hidden");
     }
+
+    if (unifiedQuickNav) {
+      unifiedQuickNav.classList.remove("hidden");
+      if (resolvedIndex && unifiedLastRowBtn && unifiedLastRowIdx) {
+        unifiedLastRowIdx.textContent = `Row #${resolvedIndex}`;
+        unifiedLastRowBtn.classList.remove("hidden");
+        unifiedLastRowBtn.title = `Scroll directly to row #${resolvedIndex}`;
+      } else if (unifiedLastRowBtn) {
+        unifiedLastRowBtn.classList.add("hidden");
+      }
+    }
+
     if (guidedResetBtn) {
       guidedResetBtn.classList.remove("hidden");
       guidedResetBtn.textContent = "✕ Exit Unified View";
     }
     if (aiSearchAvailability) {
-      aiSearchAvailability.textContent = `Unified timeline: ${events.length.toLocaleString()} events across ${fileCount} files.`;
+      aiSearchAvailability.textContent = `Unified timeline: ${events.length.toLocaleString()} events across ${fileCount} files. Double-click row or click 'Details' to inspect all raw columns.`;
       aiSearchAvailability.classList.add("ready");
     }
   }
@@ -1271,8 +1368,11 @@
     isUnifiedCorrelatedMode = false;
     unifiedCorrelatedRows = [];
     unifiedCorrelatedLabel = "";
+    savedUnifiedContext = null;
     gridFilterDescription = null;
 
+    if (unifiedQuickNav) unifiedQuickNav.classList.add("hidden");
+    if (gridReturnUnifiedBtn) gridReturnUnifiedBtn.classList.add("hidden");
     if (pageSizeSelect) pageSizeSelect.disabled = !controlsEnabled;
     resetPagination();
 
@@ -1284,10 +1384,18 @@
     updateGridActiveFilterBar();
   }
 
-  async function jumpToNativeFileRow(targetPath, rowNum) {
+  async function jumpToNativeFileRow(targetPath, rowNum, originatingUnifiedIndex = null) {
+    const origIdx = originatingUnifiedIndex || (savedUnifiedContext ? savedUnifiedContext.jumpedIndex : 1);
+    savedUnifiedContext = {
+      events: (unifiedCorrelatedRows && unifiedCorrelatedRows.length > 0) ? unifiedCorrelatedRows : (savedUnifiedContext ? savedUnifiedContext.events : []),
+      label: unifiedCorrelatedLabel || (savedUnifiedContext ? savedUnifiedContext.label : "Cross-File Unified Correlation"),
+      jumpedIndex: origIdx,
+      jumpedRowNum: rowNum,
+      jumpedPath: targetPath,
+      filterSearch: searchBox ? searchBox.value : "",
+    };
+
     isUnifiedCorrelatedMode = false;
-    unifiedCorrelatedRows = [];
-    unifiedCorrelatedLabel = "";
 
     const targetIdx = loadedFiles.findIndex(
       (f) => f.path === targetPath || f.name === targetPath || (targetPath && targetPath.endsWith(f.name))
@@ -1304,6 +1412,149 @@
     if (rowNum) {
       filterGridByIntel("rows", [rowNum], `Row ${rowNum} (Jumped from Unified View)`);
     }
+
+    if (gridReturnUnifiedBtn && gridReturnUnifiedIdx) {
+      gridReturnUnifiedIdx.textContent = `Row #${origIdx}`;
+      gridReturnUnifiedBtn.title = `Return to Unified View and restore position at row #${origIdx} (Esc / Alt+Left)`;
+      gridReturnUnifiedBtn.classList.remove("hidden");
+    }
+  }
+
+  async function returnToUnifiedCorrelatedGrid() {
+    if (!savedUnifiedContext || !savedUnifiedContext.events || savedUnifiedContext.events.length === 0) {
+      return;
+    }
+    const { events, label, jumpedIndex, filterSearch } = savedUnifiedContext;
+    await renderUnifiedCorrelatedGrid(events, label, jumpedIndex);
+    if (filterSearch && searchBox) {
+      searchBox.value = filterSearch;
+      if (table) {
+        table.setFilter((data) => {
+          const term = filterSearch.toLowerCase();
+          return (
+            (data.fileName && data.fileName.toLowerCase().includes(term)) ||
+            (data.utcText && data.utcText.toLowerCase().includes(term)) ||
+            (data.user && data.user.toLowerCase().includes(term)) ||
+            (data.host && data.host.toLowerCase().includes(term)) ||
+            (data.action && data.action.toLowerCase().includes(term)) ||
+            (Array.isArray(data.mitreTags) && data.mitreTags.some((t) => t.toLowerCase().includes(term)))
+          );
+        });
+      }
+    }
+  }
+
+  async function openUnifiedRowDetailDrawer(rowData) {
+    if (!rowData || !unifiedDetailDrawer) return;
+    activeDrawerRowData = rowData;
+    activeDrawerRawDetails = null;
+
+    unifiedDrawerTitle.textContent = `${rowData.fileName} — Event #${rowData._unifiedIndex} (Row #${rowData.row_num})`;
+    unifiedDrawerMeta.innerHTML = `
+      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">File:</span> <code>${escapeHtml(rowData.fileName)}</code></div>
+      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Native Row:</span> <strong>#${rowData.row_num}</strong></div>
+      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Time:</span> ${escapeHtml(rowData.utcText)}</div>
+      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">User:</span> ${escapeHtml(rowData.user)}</div>
+      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Host:</span> ${escapeHtml(rowData.host)}</div>
+      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Action:</span> ${escapeHtml(rowData.action)}</div>
+      ${Array.isArray(rowData.mitreTags) && rowData.mitreTags.length > 0 ? `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Tags:</span> ${rowData.mitreTags.map((t) => `<span class="cross-ioc-meta-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3);margin-right:3px;">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+    `;
+
+    unifiedDrawerFilter.value = "";
+    unifiedDrawerBody.innerHTML = `<div class="unified-drawer-loading">Fetching all raw fields from source database…</div>`;
+    unifiedDetailDrawer.classList.remove("hidden");
+    unifiedDrawerBackdrop.classList.remove("hidden");
+
+    try {
+      const targetFile = (loadedFiles || []).find(
+        (f) => f.path === rowData.path || f.name === rowData.fileName || (rowData.path && rowData.path.endsWith(f.name))
+      );
+      const raw = await invoke("get_row_raw_details", {
+        target: {
+          path: rowData.path,
+          sheet: targetFile?.sheet || null,
+          cacheDbPath: targetFile?.cacheDbPath || null,
+        },
+        rowNum: rowData.row_num,
+      });
+      activeDrawerRawDetails = raw;
+      renderDrawerFields(raw.fields || []);
+    } catch (err) {
+      console.error("Failed to load row raw details", err);
+      unifiedDrawerBody.innerHTML = `
+        <div style="padding:20px;color:var(--text-muted);">
+          <p>Could not fetch raw columns directly (${escapeHtml(String(err))}).</p>
+          <button type="button" class="btn btn-small btn-unified-primary" id="drawer-err-jump-btn">🔍 Jump to Native File Row</button>
+        </div>
+      `;
+      const errJumpBtn = document.getElementById("drawer-err-jump-btn");
+      if (errJumpBtn) {
+        errJumpBtn.addEventListener("click", () => {
+          closeUnifiedRowDetailDrawer();
+          jumpToNativeFileRow(rowData.path, rowData.row_num, rowData._unifiedIndex);
+        });
+      }
+    }
+  }
+
+  function renderDrawerFields(fields, filterTerm = "") {
+    if (!unifiedDrawerBody) return;
+    const term = (filterTerm || "").trim().toLowerCase();
+    const filtered = term
+      ? fields.filter(
+          (f) =>
+            (f.columnName && f.columnName.toLowerCase().includes(term)) ||
+            (f.value && f.value.toLowerCase().includes(term))
+        )
+      : fields;
+
+    if (filtered.length === 0) {
+      unifiedDrawerBody.innerHTML = `<div class="unified-drawer-loading">No fields match "${escapeHtml(filterTerm)}".</div>`;
+      return;
+    }
+
+    const rowsHtml = filtered
+      .map(
+        (f) => `
+        <tr>
+          <td class="unified-field-name" title="${escapeHtml(f.inferredType || 'text')}">
+            ${escapeHtml(f.columnName)}
+            <span style="font-size:10px;color:var(--text-muted);display:block;font-weight:normal;">${escapeHtml(f.inferredType || '')}</span>
+          </td>
+          <td class="unified-field-val">
+            <button type="button" class="btn-field-copy" title="Copy value" data-copy-val="${escapeHtml(f.value)}">📋</button>
+            <span>${escapeHtml(f.value || '—')}</span>
+          </td>
+        </tr>
+      `
+      )
+      .join("");
+
+    unifiedDrawerBody.innerHTML = `
+      <table class="unified-field-table">
+        <tbody>
+          ${rowsHtml}
+        </tbody>
+      </table>
+    `;
+
+    unifiedDrawerBody.querySelectorAll(".btn-field-copy").forEach((btn) => {
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const val = btn.getAttribute("data-copy-val");
+        navigator.clipboard.writeText(val || "").then(() => {
+          btn.textContent = "✓";
+          setTimeout(() => (btn.textContent = "📋"), 1200);
+        });
+      });
+    });
+  }
+
+  function closeUnifiedRowDetailDrawer() {
+    if (unifiedDetailDrawer) unifiedDetailDrawer.classList.add("hidden");
+    if (unifiedDrawerBackdrop) unifiedDrawerBackdrop.classList.add("hidden");
+    activeDrawerRowData = null;
+    activeDrawerRawDetails = null;
   }
 
   async function exportUnifiedCorrelatedData(format) {
@@ -2793,6 +3044,15 @@
 
   function updateGridActiveFilterBar() {
     if (!gridActiveFilterBar || !gridActiveFilterLabel) return;
+
+    if (savedUnifiedContext && !isUnifiedCorrelatedMode && gridReturnUnifiedBtn && gridReturnUnifiedIdx) {
+      gridReturnUnifiedIdx.textContent = `Row #${savedUnifiedContext.jumpedIndex || 1}`;
+      gridReturnUnifiedBtn.title = `Return to Unified View and restore position at row #${savedUnifiedContext.jumpedIndex || 1} (Esc / Alt+Left)`;
+      gridReturnUnifiedBtn.classList.remove("hidden");
+    } else if (gridReturnUnifiedBtn) {
+      gridReturnUnifiedBtn.classList.add("hidden");
+    }
+
     if (!isTableFiltered() || columns.length === 0) {
       gridActiveFilterBar.classList.add("hidden");
       return;
@@ -6030,11 +6290,97 @@
     reportSummaryPanel.classList.add("hidden");
   });
 
-  reportExportBtn.addEventListener("click", doReportExport);
-  exportCsvBtn.addEventListener("click", () => doExport("csv"));
-  exportXlsxBtn.addEventListener("click", () => doExport("xlsx"));
+  if (reportExportBtn) reportExportBtn.addEventListener("click", doReportExport);
+  if (exportCsvBtn) exportCsvBtn.addEventListener("click", () => doExport("csv"));
+  if (exportXlsxBtn) exportXlsxBtn.addEventListener("click", () => doExport("xlsx"));
   if (gridExportCsvBtn) gridExportCsvBtn.addEventListener("click", () => doExport("csv"));
   if (gridExportXlsxBtn) gridExportXlsxBtn.addEventListener("click", () => doExport("xlsx"));
+
+  if (gridReturnUnifiedBtn) {
+    gridReturnUnifiedBtn.addEventListener("click", () => {
+      returnToUnifiedCorrelatedGrid();
+    });
+  }
+
+  if (unifiedLastRowBtn) {
+    unifiedLastRowBtn.addEventListener("click", () => {
+      if (savedUnifiedContext?.jumpedIndex) {
+        scrollToUnifiedIndex(savedUnifiedContext.jumpedIndex);
+      }
+    });
+  }
+
+  if (unifiedJumpGoBtn) {
+    unifiedJumpGoBtn.addEventListener("click", () => {
+      const idx = parseInt(unifiedJumpInput?.value, 10);
+      if (idx > 0) scrollToUnifiedIndex(idx);
+    });
+  }
+
+  if (unifiedJumpInput) {
+    unifiedJumpInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        const idx = parseInt(unifiedJumpInput.value, 10);
+        if (idx > 0) scrollToUnifiedIndex(idx);
+      }
+    });
+  }
+
+  if (unifiedDrawerCloseBtn) {
+    unifiedDrawerCloseBtn.addEventListener("click", closeUnifiedRowDetailDrawer);
+  }
+
+  if (unifiedDrawerBackdrop) {
+    unifiedDrawerBackdrop.addEventListener("click", closeUnifiedRowDetailDrawer);
+  }
+
+  if (unifiedDrawerJumpBtn) {
+    unifiedDrawerJumpBtn.addEventListener("click", () => {
+      if (activeDrawerRowData) {
+        const rd = activeDrawerRowData;
+        closeUnifiedRowDetailDrawer();
+        jumpToNativeFileRow(rd.path, rd.row_num, rd._unifiedIndex);
+      }
+    });
+  }
+
+  if (unifiedDrawerCopyBtn) {
+    unifiedDrawerCopyBtn.addEventListener("click", () => {
+      if (!activeDrawerRawDetails) return;
+      const jsonStr = JSON.stringify(activeDrawerRawDetails, null, 2);
+      navigator.clipboard.writeText(jsonStr).then(() => {
+        unifiedDrawerCopyBtn.textContent = "✓ Copied JSON";
+        setTimeout(() => (unifiedDrawerCopyBtn.textContent = "📋 Copy JSON"), 1500);
+      });
+    });
+  }
+
+  if (unifiedDrawerFilter) {
+    unifiedDrawerFilter.addEventListener("input", () => {
+      if (activeDrawerRawDetails?.fields) {
+        renderDrawerFields(activeDrawerRawDetails.fields, unifiedDrawerFilter.value);
+      }
+    });
+  }
+
+  window.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      if (unifiedDetailDrawer && !unifiedDetailDrawer.classList.contains("hidden")) {
+        closeUnifiedRowDetailDrawer();
+        return;
+      }
+      if (!isUnifiedCorrelatedMode && savedUnifiedContext && savedUnifiedContext.events?.length > 0) {
+        returnToUnifiedCorrelatedGrid();
+        return;
+      }
+    }
+    if (e.altKey && e.key === "ArrowLeft") {
+      if (!isUnifiedCorrelatedMode && savedUnifiedContext && savedUnifiedContext.events?.length > 0) {
+        e.preventDefault();
+        returnToUnifiedCorrelatedGrid();
+      }
+    }
+  });
   if (selectionCountBadge) {
     selectionCountBadge.addEventListener("click", () => {
       if (table && typeof table.deselectRows === "function") {
@@ -6389,6 +6735,18 @@
     },
     exportUnifiedCorrelatedDataForTest(format) {
       return exportUnifiedCorrelatedData(format);
+    },
+    returnToUnifiedCorrelatedGridForTest() {
+      return returnToUnifiedCorrelatedGrid();
+    },
+    getSavedUnifiedContextForTest() {
+      return savedUnifiedContext;
+    },
+    openUnifiedRowDetailDrawerForTest(row) {
+      return openUnifiedRowDetailDrawer(row);
+    },
+    closeUnifiedRowDetailDrawerForTest() {
+      return closeUnifiedRowDetailDrawer();
     },
   });
 })();

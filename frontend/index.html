@@ -18,9 +18,9 @@
       </div>
       <div id="file-info" class="file-info">No file loaded</div>
       <div class="toolbar-spacer"></div>
-      <button id="report-export-btn" class="btn" disabled>Threat Report</button>
-      <button id="export-csv-btn" class="btn" disabled>Export CSV</button>
-      <button id="export-xlsx-btn" class="btn" disabled>Export Excel</button>
+      <button id="report-export-btn" class="btn hidden" disabled>Threat Report</button>
+      <button id="export-csv-btn" class="btn hidden" disabled>Export CSV</button>
+      <button id="export-xlsx-btn" class="btn hidden" disabled>Export Excel</button>
     </header>
 
     <div id="progress-bar-wrap" class="hidden">
@@ -72,8 +72,17 @@
             <button id="sidebar-toggle-btn" class="btn btn-small" title="Toggle Filter Sidebar">◧ Toggle Filters</button>
             <input id="search-box" type="search" placeholder="Quick search all columns&hellip;" disabled />
             <button id="grid-cross-search-btn" class="btn btn-small hidden" title="Search this term across all loaded files">🌐 Pivot All Files</button>
+            <button id="grid-return-unified-btn" class="btn btn-small btn-unified-return hidden" type="button" title="Return to Unified View and restore initial row position (Esc / Alt+Left)">↩ Return to Unified View (<span id="grid-return-unified-idx">Row #1</span>)</button>
             <div id="grid-active-filter-bar" class="grid-filter-bar hidden">
               <span id="grid-active-filter-label" class="grid-filter-label">Filtered</span>
+              <div id="unified-quick-nav" class="unified-quick-nav hidden">
+                <button id="unified-last-row-btn" class="btn btn-small btn-unified-last-row hidden" type="button" title="Scroll directly to last inspected row">🎯 Last Inspected (<span id="unified-last-row-idx">Row #1</span>)</button>
+                <div class="unified-jump-group">
+                  <span class="jump-label">Go to #:</span>
+                  <input id="unified-jump-input" type="number" min="1" placeholder="Row #" />
+                  <button id="unified-jump-go-btn" class="btn btn-small" type="button">Go</button>
+                </div>
+              </div>
               <button id="grid-clear-filter-btn" class="btn btn-small btn-clear-filter" title="Clear filter and show all rows">✕ Clear Filter</button>
             </div>
           </div>
@@ -597,6 +606,29 @@
       <button class="btn btn-small filter-remove-btn" title="Remove filter">&times;</button>
     </div>
   </template>
+
+  <!-- Unified Row Details Slide-Over Drawer -->
+  <div id="unified-detail-drawer" class="unified-detail-drawer hidden" role="dialog" aria-modal="true" aria-labelledby="unified-drawer-title">
+    <div class="unified-drawer-header">
+      <div class="unified-drawer-title-group">
+        <span class="unified-drawer-badge">Forensic Row Detail</span>
+        <h3 id="unified-drawer-title" class="unified-drawer-title">Row Details</h3>
+      </div>
+      <div class="unified-drawer-actions">
+        <button id="unified-drawer-jump-btn" type="button" class="btn btn-small btn-unified-primary" title="Switch to this file and view row in native grid">🔍 Open in File View</button>
+        <button id="unified-drawer-copy-btn" type="button" class="btn btn-small" title="Copy raw row as JSON">📋 Copy JSON</button>
+        <button id="unified-drawer-close-btn" type="button" class="btn btn-small btn-icon" title="Close inspector (Esc)">✕</button>
+      </div>
+    </div>
+    <div id="unified-drawer-meta" class="unified-drawer-meta"></div>
+    <div class="unified-drawer-search">
+      <input id="unified-drawer-filter" type="search" placeholder="Filter columns or values…" />
+    </div>
+    <div id="unified-drawer-body" class="unified-drawer-body">
+      <div class="unified-drawer-loading">Loading raw fields…</div>
+    </div>
+  </div>
+  <div id="unified-drawer-backdrop" class="unified-drawer-backdrop hidden"></div>
 
   <script src="vendor/tabulator/tabulator.min.js"></script>
   <script src="app.js"></script>

@@ -443,6 +443,15 @@ function bootApp({ commandHandlers = {} } = {}) {
       destPath: "C:\\exports\\unified_multisheet.xlsx",
     }),
     export_text_file: async () => true,
+    get_row_raw_details: async () => ({
+      fileName: "activity_log_a.xlsx",
+      filePath: "/data/activity_log_a.xlsx",
+      rowNum: 10,
+      fields: [
+        { columnName: "UserPrincipalName", value: "user_a@domain.local", inferredType: "text" },
+        { columnName: "Action", value: "UserLoggedIn", inferredType: "text" },
+      ],
+    }),
   };
 
   const invoke = async (command, args = {}) => {
@@ -1542,5 +1551,110 @@ test("unified correlated grid export calls export_unified_multisheet_xlsx for xl
   assert.ok(exportCall, "export_unified_multisheet_xlsx must be invoked");
   assert.equal(exportCall.args.events.length, 2);
   assert.equal(exportCall.args.destPath, "C:\\exports\\unified_multisheet.xlsx");
+});
+
+test("unified correlated grid row jump preserves context and allows instant return to initial position", async () => {
+  const app = bootApp();
+  await loadFixture(app);
+
+  const mockEvents = [
+    {
+      fileName: "activity_log_a.xlsx",
+      path: "/data/activity_log_a.xlsx",
+      rowNum: 10,
+      epochMs: 1773055300000,
+      utcText: "2026-03-09 11:21:40 UTC",
+      user: "user_a@domain.local",
+      host: "10.0.0.5",
+      action: "UserLoggedIn",
+      mitreTags: ["T1078 Valid Accounts"],
+    },
+    {
+      fileName: "activity_log_b.csv",
+      path: "/data/activity_log_b.csv",
+      rowNum: 25,
+      epochMs: 1773055400000,
+      utcText: "2026-03-09 11:23:20 UTC",
+      user: "user_a@domain.local",
+      host: "192.168.1.100",
+      action: "New-InboxRule",
+      mitreTags: ["T1114.003 Email Forwarding Rule"],
+    },
+  ];
+
+  app.debug.renderUnifiedCorrelatedGridForTest(mockEvents, "Correlation: TEST-RETURN");
+  await settleFrontend();
+
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), true);
+  const returnBtn = app.document.getElementById("grid-return-unified-btn");
+  assert.equal(returnBtn.classList.contains("hidden"), true);
+
+  // Jump to row 25 (index 2)
+  const jumpButtons = app.document.querySelectorAll(".btn-unified-jump");
+  assert.ok(jumpButtons.length >= 2, "Action buttons rendered");
+  jumpButtons[1].dispatchEvent({ type: "click" });
+  await settleFrontend();
+
+  // Mode is paused to view native row, but context is preserved
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), false);
+  const savedContext = app.debug.getSavedUnifiedContextForTest();
+  assert.ok(savedContext, "savedUnifiedContext must be preserved");
+  assert.equal(savedContext.jumpedIndex, 2);
+  assert.equal(savedContext.jumpedRowNum, 25);
+  assert.equal(returnBtn.classList.contains("hidden"), false);
+  assert.ok(returnBtn.textContent.includes("Row #2"));
+
+  // Click return button -> restores unified grid and returns to initial position
+  returnBtn.dispatchEvent({ type: "click" });
+  await settleFrontend();
+
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), true);
+  assert.equal(app.debug.getUnifiedCorrelatedRowsForTest().length, 2);
+  assert.equal(returnBtn.classList.contains("hidden"), true);
+});
+
+test("unified correlated grid row detail drawer inspects raw fields without leaving unified view", async () => {
+  const app = bootApp();
+  await loadFixture(app);
+
+  const mockEvents = [
+    {
+      fileName: "activity_log_a.xlsx",
+      path: "/data/activity_log_a.xlsx",
+      rowNum: 10,
+      epochMs: 1773055300000,
+      utcText: "2026-03-09 11:21:40 UTC",
+      user: "user_a@domain.local",
+      host: "10.0.0.5",
+      action: "UserLoggedIn",
+      mitreTags: ["T1078 Valid Accounts"],
+    },
+  ];
+
+  app.debug.renderUnifiedCorrelatedGridForTest(mockEvents, "Correlation: TEST-DRAWER");
+  await settleFrontend();
+
+  const drawer = app.document.getElementById("unified-detail-drawer");
+  const backdrop = app.document.getElementById("unified-drawer-backdrop");
+  assert.equal(drawer.classList.contains("hidden"), true);
+
+  // Open drawer for event 1
+  await app.debug.openUnifiedRowDetailDrawerForTest(mockEvents[0]);
+  await settleFrontend();
+
+  assert.equal(drawer.classList.contains("hidden"), false);
+  assert.equal(backdrop.classList.contains("hidden"), false);
+  assert.ok(app.document.getElementById("unified-drawer-title").textContent.includes("activity_log_a.xlsx"));
+
+  const rawCall = app.calls.find((c) => c.command === "get_row_raw_details");
+  assert.ok(rawCall, "get_row_raw_details must be invoked");
+  assert.equal(rawCall.args.rowNum, 10);
+
+  // Close drawer
+  app.debug.closeUnifiedRowDetailDrawerForTest();
+  assert.equal(drawer.classList.contains("hidden"), true);
+  assert.equal(backdrop.classList.contains("hidden"), true);
+  // Still in unified mode, unchanged position
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), true);
 });
 
