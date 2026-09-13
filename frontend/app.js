@@ -1126,16 +1126,17 @@
 
   function scrollToUnifiedIndex(targetIdx) {
     if (!table || !targetIdx) return;
-    requestAnimationFrame(() => {
+    const schedule = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (cb) => setTimeout(cb, 0);
+    schedule(() => {
       setTimeout(() => {
         try {
-          const rows = table.getRows();
-          const targetRow = rows.find((r) => r.getData()._unifiedIndex === targetIdx) || table.getRow(targetIdx);
-          if (targetRow) {
+          const rows = typeof table.getRows === "function" ? table.getRows() : [];
+          const targetRow = rows.find((r) => r.getData && r.getData()._unifiedIndex === targetIdx) || (typeof table.getRow === "function" ? table.getRow(targetIdx) : null);
+          if (targetRow && typeof table.scrollToRow === "function") {
             table.scrollToRow(targetRow, "center", false).then(() => {
               if (typeof table.deselectRows === "function") table.deselectRows();
               if (typeof targetRow.select === "function") targetRow.select();
-              const el = targetRow.getElement();
+              const el = typeof targetRow.getElement === "function" ? targetRow.getElement() : null;
               if (el) {
                 el.classList.add("analyst-row-flash");
                 setTimeout(() => el.classList.remove("analyst-row-flash"), 2200);

@@ -474,6 +474,8 @@ function bootApp({ commandHandlers = {} } = {}) {
     removeEventListener: (type, listener) => {
       document.removeEventListener?.(type, listener);
     },
+    requestAnimationFrame: (cb) => setTimeout(cb, 0),
+    cancelAnimationFrame: (id) => clearTimeout(id),
   };
   window.window = window;
 
@@ -485,6 +487,8 @@ function bootApp({ commandHandlers = {} } = {}) {
     console: { error: () => {}, warn: () => {}, log: () => {} },
     setTimeout,
     clearTimeout,
+    requestAnimationFrame: (cb) => setTimeout(cb, 0),
+    cancelAnimationFrame: (id) => clearTimeout(id),
   };
 
   vm.runInNewContext(APP_SOURCE, sandbox, { filename: APP_PATH });
