@@ -468,6 +468,12 @@ function bootApp({ commandHandlers = {} } = {}) {
     },
     __logParserDebug: {},
     confirm: () => true,
+    addEventListener: (type, listener) => {
+      document.addEventListener(type, listener);
+    },
+    removeEventListener: (type, listener) => {
+      document.removeEventListener?.(type, listener);
+    },
   };
   window.window = window;
 

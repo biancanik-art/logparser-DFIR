@@ -6363,24 +6363,30 @@
     });
   }
 
-  window.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      if (unifiedDetailDrawer && !unifiedDetailDrawer.classList.contains("hidden")) {
-        closeUnifiedRowDetailDrawer();
-        return;
+  const keydownTarget = (typeof window !== "undefined" && typeof window.addEventListener === "function")
+    ? window
+    : (typeof document !== "undefined" && typeof document.addEventListener === "function" ? document : null);
+
+  if (keydownTarget) {
+    keydownTarget.addEventListener("keydown", (e) => {
+      if (e.key === "Escape") {
+        if (unifiedDetailDrawer && !unifiedDetailDrawer.classList.contains("hidden")) {
+          closeUnifiedRowDetailDrawer();
+          return;
+        }
+        if (!isUnifiedCorrelatedMode && savedUnifiedContext && savedUnifiedContext.events?.length > 0) {
+          returnToUnifiedCorrelatedGrid();
+          return;
+        }
       }
-      if (!isUnifiedCorrelatedMode && savedUnifiedContext && savedUnifiedContext.events?.length > 0) {
-        returnToUnifiedCorrelatedGrid();
-        return;
+      if (e.altKey && e.key === "ArrowLeft") {
+        if (!isUnifiedCorrelatedMode && savedUnifiedContext && savedUnifiedContext.events?.length > 0) {
+          e.preventDefault();
+          returnToUnifiedCorrelatedGrid();
+        }
       }
-    }
-    if (e.altKey && e.key === "ArrowLeft") {
-      if (!isUnifiedCorrelatedMode && savedUnifiedContext && savedUnifiedContext.events?.length > 0) {
-        e.preventDefault();
-        returnToUnifiedCorrelatedGrid();
-      }
-    }
-  });
+    });
+  }
   if (selectionCountBadge) {
     selectionCountBadge.addEventListener("click", () => {
       if (table && typeof table.deselectRows === "function") {
