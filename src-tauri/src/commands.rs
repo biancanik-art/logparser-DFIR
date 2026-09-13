@@ -1245,6 +1245,21 @@ fn resolve_llm_resource(app: &AppHandle, relative_path: &str) -> Result<PathBuf,
     if development.is_file() {
         return Ok(development);
     }
+    // Safe dev fallback: if 3b is requested but 1.5b is present on disk, use 1.5b
+    if relative_path.contains("3b") {
+        let fallback_rel = relative_path.replace("3b", "1.5b");
+        if let Ok(b) = app.path().resolve(&fallback_rel, BaseDirectory::Resource) {
+            if b.is_file() {
+                return Ok(b);
+            }
+        }
+        let dev_fallback = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("resources")
+            .join(&fallback_rel);
+        if dev_fallback.is_file() {
+            return Ok(dev_fallback);
+        }
+    }
     Err(format!(
         "local AI resource is missing: {}. Install an AI-enabled build or fetch the pinned model resources before running in development.",
         bundled.display()
@@ -1720,32 +1735,20 @@ pub async fn ask_analyst(
 
     let intent = analyst::classify_ask(&trimmed);
 
-    // If multiple files are loaded and this is a timeline ask, perform multi-file correlation timeline!
-    if intent == analyst::AnalystIntent::Timeline {
-        if let Some(ref target_files) = files {
-            if target_files.len() > 1 {
-                let targets = target_files.clone();
-                let app_progress = app.clone();
-                return tauri::async_runtime::spawn_blocking(move || {
-                    let _ = app_progress.emit(
-                        "analyst-progress",
-                        AnalystProgressPayload {
-                            request_id,
-                            phase: "timeline".to_string(),
-                        },
-                    );
-                    analyst::multi_file_timeline(&targets, &trimmed).map_err(|e| e.to_string())
-                })
-                .await
-                .map_err(|e| format!("multi-file timeline join error: {e}"))?;
-            }
-        }
-    }
+    // If multiple files are loaded and this is a cross-file query, perform multi-file correlation!
+    if let Some(ref target_files) = files {
+        if target_files.len() > 1 {
+            let lower_ask = trimmed.to_lowercase();
+            let is_cross_file = intent == analyst::AnalystIntent::Timeline
+                || intent == analyst::AnalystIntent::Hunt
+                || intent == analyst::AnalystIntent::Chains
+                || lower_ask.contains("across")
+                || lower_ask.contains("all files")
+                || lower_ask.contains("correlate")
+                || lower_ask.contains("correlation")
+                || lower_ask.contains("files");
 
-    // If multiple files are loaded and this is a hunt ask, perform multi-file hunt correlation!
-    if intent == analyst::AnalystIntent::Hunt {
-        if let Some(ref target_files) = files {
-            if target_files.len() > 1 {
+            if is_cross_file {
                 let targets = target_files.clone();
                 let app_progress = app.clone();
                 return tauri::async_runtime::spawn_blocking(move || {
@@ -1753,13 +1756,21 @@ pub async fn ask_analyst(
                         "analyst-progress",
                         AnalystProgressPayload {
                             request_id,
-                            phase: "hunt".to_string(),
+                            phase: if intent == analyst::AnalystIntent::Hunt {
+                                "hunt".to_string()
+                            } else {
+                                "timeline".to_string()
+                            },
                         },
                     );
-                    analyst::multi_file_hunt(&targets, &trimmed).map_err(|e| e.to_string())
+                    if intent == analyst::AnalystIntent::Hunt {
+                        analyst::multi_file_hunt(&targets, &trimmed).map_err(|e| e.to_string())
+                    } else {
+                        analyst::multi_file_timeline(&targets, &trimmed).map_err(|e| e.to_string())
+                    }
                 })
                 .await
-                .map_err(|e| format!("multi-file hunt join error: {e}"))?;
+                .map_err(|e| format!("multi-file analyst join error: {e}"))?;
             }
         }
     }
@@ -2507,6 +2518,335 @@ pub async fn export_unified_multisheet_xlsx(
     })
     .await
     .map_err(|e| format!("export_unified_multisheet_xlsx join error: {e}"))?
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct FileIntelBreakdown {
+    pub file_name: String,
+    pub path: String,
+    pub sheet: Option<String>,
+    pub rows_scanned: i64,
+    pub match_count: i64,
+    pub matched_rows: i64,
+    pub top_tactics: Vec<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiIntelScanProgressPayload {
+    pub current_file: String,
+    pub file_index: usize,
+    pub file_total: usize,
+    pub rows_done: i64,
+    pub rows_total: i64,
+    pub phase: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MultiFileIntelSummary {
+    pub total_files_scanned: usize,
+    pub total_rows_scanned: i64,
+    pub total_match_count: i64,
+    pub total_matched_rows: i64,
+    pub rows_scanned: i64,
+    pub match_count: i64,
+    pub matched_rows: i64,
+    pub file_breakdowns: Vec<FileIntelBreakdown>,
+    pub tactics: Vec<matcher::IntelCountSummary>,
+    pub techniques: Vec<matcher::IntelCountSummary>,
+    pub chains: Vec<crate::intel::chains::IntelChainSummary>,
+    pub correlated_events: Vec<analyst::CorrelatedTimelineEvent>,
+}
+
+pub fn scan_all_files_intel_matches_internal<F>(
+    files: Vec<FileTarget>,
+    include_bec: Option<bool>,
+    progress: F,
+) -> Result<MultiFileIntelSummary, String>
+where
+    F: Fn(MultiIntelScanProgressPayload) + Send + Sync + 'static,
+{
+    if files.is_empty() {
+        return Err("No files provided for multi-file threat enrichment".to_string());
+    }
+
+    let include_bec = include_bec.unwrap_or(true);
+    let file_total = files.len();
+    let mut total_files_scanned = 0;
+    let mut total_rows_scanned: i64 = 0;
+    let mut total_match_count: i64 = 0;
+    let mut total_matched_rows: i64 = 0;
+
+    let mut file_breakdowns = Vec::with_capacity(file_total);
+    let mut aggregated_tactics: HashMap<String, matcher::IntelCountSummary> = HashMap::new();
+    let mut aggregated_techniques: HashMap<String, matcher::IntelCountSummary> = HashMap::new();
+    let mut all_chains = Vec::new();
+    let mut all_correlated_events = Vec::new();
+
+    for (idx, target) in files.into_iter().enumerate() {
+        let file_name = Path::new(&target.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| target.path.clone());
+        let sheet_name = target.sheet.clone().unwrap_or_default();
+
+        let db_path = if let Some(ref p) = target.cache_db_path {
+            let candidate = PathBuf::from(p);
+            if candidate.exists() {
+                candidate
+            } else {
+                db::cache_db_path(Path::new(&target.path), &sheet_name)
+                    .unwrap_or_else(|_| PathBuf::from(p))
+            }
+        } else {
+            match db::cache_db_path(Path::new(&target.path), &sheet_name) {
+                Ok(p) => p,
+                Err(e) => {
+                    file_breakdowns.push(FileIntelBreakdown {
+                        file_name,
+                        path: target.path,
+                        sheet: target.sheet,
+                        rows_scanned: 0,
+                        match_count: 0,
+                        matched_rows: 0,
+                        top_tactics: Vec::new(),
+                        error: Some(e.to_string()),
+                    });
+                    continue;
+                }
+            }
+        };
+
+        if !db_path.exists() {
+            file_breakdowns.push(FileIntelBreakdown {
+                file_name,
+                path: target.path,
+                sheet: target.sheet,
+                rows_scanned: 0,
+                match_count: 0,
+                matched_rows: 0,
+                top_tactics: Vec::new(),
+                error: Some("database cache not found".to_string()),
+            });
+            continue;
+        }
+
+        let mut conn = match db::open(&db_path) {
+            Ok(c) => c,
+            Err(e) => {
+                file_breakdowns.push(FileIntelBreakdown {
+                    file_name,
+                    path: target.path,
+                    sheet: target.sheet,
+                    rows_scanned: 0,
+                    match_count: 0,
+                    matched_rows: 0,
+                    top_tactics: Vec::new(),
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+
+        let columns = match db::load_columns(&conn) {
+            Ok(cols) => cols,
+            Err(e) => {
+                file_breakdowns.push(FileIntelBreakdown {
+                    file_name,
+                    path: target.path,
+                    sheet: target.sheet,
+                    rows_scanned: 0,
+                    match_count: 0,
+                    matched_rows: 0,
+                    top_tactics: Vec::new(),
+                    error: Some(e.to_string()),
+                });
+                continue;
+            }
+        };
+
+        if !analyst::row_time_available(&conn).unwrap_or(false) {
+            let _ = time::normalize_timestamp_column_with_options(&mut conn, &columns, None, None);
+        }
+
+        let active_columns = guided_query::active_evidence_columns(&conn).unwrap_or_default();
+        if active_columns.is_empty() {
+            file_breakdowns.push(FileIntelBreakdown {
+                file_name,
+                path: target.path,
+                sheet: target.sheet,
+                rows_scanned: 0,
+                match_count: 0,
+                matched_rows: 0,
+                top_tactics: Vec::new(),
+                error: Some("no evidence columns detected for threat scan".to_string()),
+            });
+            continue;
+        }
+
+        let file_name_clone = file_name.clone();
+        let scan_res = matcher::scan_connection_with_options(
+            &mut conn,
+            &active_columns,
+            include_bec,
+            |rows_done, rows_total, phase| {
+                progress(MultiIntelScanProgressPayload {
+                    current_file: file_name_clone.clone(),
+                    file_index: idx + 1,
+                    file_total,
+                    rows_done,
+                    rows_total,
+                    phase: phase.to_string(),
+                });
+            },
+        );
+
+        match scan_res {
+            Ok(summary) => {
+                total_files_scanned += 1;
+                total_rows_scanned += summary.rows_scanned;
+                total_match_count += summary.match_count;
+                total_matched_rows += summary.matched_rows;
+
+                let top_tactics: Vec<String> =
+                    summary.tactics.iter().take(3).map(|t| t.name.clone()).collect();
+
+                file_breakdowns.push(FileIntelBreakdown {
+                    file_name: file_name.clone(),
+                    path: target.path.clone(),
+                    sheet: target.sheet.clone(),
+                    rows_scanned: summary.rows_scanned,
+                    match_count: summary.match_count,
+                    matched_rows: summary.matched_rows,
+                    top_tactics,
+                    error: None,
+                });
+
+                for tactic in summary.tactics {
+                    let entry = aggregated_tactics.entry(tactic.id.clone()).or_insert_with(|| {
+                        matcher::IntelCountSummary {
+                            id: tactic.id.clone(),
+                            name: tactic.name.clone(),
+                            match_count: 0,
+                            row_count: 0,
+                        }
+                    });
+                    entry.match_count += tactic.match_count;
+                    entry.row_count += tactic.row_count;
+                }
+
+                for tech in summary.techniques {
+                    let entry = aggregated_techniques.entry(tech.id.clone()).or_insert_with(|| {
+                        matcher::IntelCountSummary {
+                            id: tech.id.clone(),
+                            name: tech.name.clone(),
+                            match_count: 0,
+                            row_count: 0,
+                        }
+                    });
+                    entry.match_count += tech.match_count;
+                    entry.row_count += tech.row_count;
+                }
+
+                for chain in summary.chains {
+                    all_chains.push(chain);
+                }
+
+                // Extract all matched rows for the unified grid
+                let mut matched_row_ids = Vec::new();
+                if let Ok(mut stmt) =
+                    conn.prepare("SELECT DISTINCT row_num FROM _intel_match ORDER BY row_num ASC")
+                {
+                    if let Ok(rows) = stmt.query_map([], |r| r.get::<_, i64>(0)) {
+                        for r in rows.flatten() {
+                            matched_row_ids.push(r);
+                        }
+                    }
+                }
+
+                let events = analyst::extract_correlated_events_for_rows(
+                    &conn,
+                    &columns,
+                    &matched_row_ids,
+                    &file_name,
+                    &target.path,
+                );
+                all_correlated_events.extend(events);
+            }
+            Err(e) => {
+                file_breakdowns.push(FileIntelBreakdown {
+                    file_name,
+                    path: target.path,
+                    sheet: target.sheet,
+                    rows_scanned: 0,
+                    match_count: 0,
+                    matched_rows: 0,
+                    top_tactics: Vec::new(),
+                    error: Some(e.to_string()),
+                });
+            }
+        }
+    }
+
+    let mut tactics: Vec<matcher::IntelCountSummary> = aggregated_tactics.into_values().collect();
+    tactics.sort_by(|a, b| b.match_count.cmp(&a.match_count));
+
+    let mut techniques: Vec<matcher::IntelCountSummary> = aggregated_techniques.into_values().collect();
+    techniques.sort_by(|a, b| b.match_count.cmp(&a.match_count));
+
+    all_correlated_events.sort_by(|a, b| {
+        match (a.epoch_ms, b.epoch_ms) {
+            (Some(ea), Some(eb)) => ea.cmp(&eb),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.file_name.cmp(&b.file_name).then(a.row_num.cmp(&b.row_num)),
+        }
+    });
+
+    Ok(MultiFileIntelSummary {
+        total_files_scanned,
+        total_rows_scanned,
+        total_match_count,
+        total_matched_rows,
+        rows_scanned: total_rows_scanned,
+        match_count: total_match_count,
+        matched_rows: total_matched_rows,
+        file_breakdowns,
+        tactics,
+        techniques,
+        chains: all_chains,
+        correlated_events: all_correlated_events,
+    })
+}
+
+#[tauri::command]
+pub async fn scan_all_files_intel_matches(
+    app: AppHandle,
+    files: Vec<FileTarget>,
+    include_bec: Option<bool>,
+) -> Result<MultiFileIntelSummary, String> {
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        scan_all_files_intel_matches_internal(files, include_bec, move |payload| {
+            let _ = app_for_task.emit("multi-intel-scan-progress", payload.clone());
+            let _ = app_for_task.emit(
+                "intel-scan-progress",
+                IntelScanProgressPayload {
+                    rows_done: payload.rows_done,
+                    rows_total: payload.rows_total,
+                    phase: format!(
+                        "[{}/{}] {}: {}",
+                        payload.file_index, payload.file_total, payload.current_file, payload.phase
+                    ),
+                },
+            );
+        })
+    })
+    .await
+    .map_err(|e| format!("scan_all_files_intel_matches join error: {e}"))?
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -3319,5 +3659,98 @@ mod tests {
         let _ = std::fs::remove_file(&db1_path);
         let _ = std::fs::remove_file(&db2_path);
         });
+    }
+
+    #[test]
+    fn scan_all_files_intel_matches_across_multiple_databases() {
+        let db1_path = import_cache_test_path("multi_intel1");
+        let db2_path = import_cache_test_path("multi_intel2");
+
+        let cols1 = vec![
+            ColumnMeta {
+                sql_name: "commandline".to_string(),
+                original_name: "CommandLine".to_string(),
+                col_index: 0,
+                inferred_type: "text".to_string(),
+            },
+            ColumnMeta {
+                sql_name: "user".to_string(),
+                original_name: "UserName".to_string(),
+                col_index: 1,
+                inferred_type: "text".to_string(),
+            },
+        ];
+
+        let cols2 = vec![
+            ColumnMeta {
+                sql_name: "cmd".to_string(),
+                original_name: "CommandLine".to_string(),
+                col_index: 0,
+                inferred_type: "text".to_string(),
+            },
+            ColumnMeta {
+                sql_name: "user".to_string(),
+                original_name: "User".to_string(),
+                col_index: 1,
+                inferred_type: "text".to_string(),
+            },
+        ];
+
+        // DB 1: PowerShell suspicious command
+        {
+            let conn1 = Connection::open(&db1_path).unwrap();
+            db::create_schema(&conn1, &cols1).unwrap();
+            conn1.execute(
+                "INSERT INTO rows (row_num, commandline, user) VALUES (1, 'powershell -nop -enc JAB', 'alice')",
+                [],
+            ).unwrap();
+            conn1.execute(
+                "INSERT INTO rows (row_num, commandline, user) VALUES (2, 'notepad.exe readme.txt', 'alice')",
+                [],
+            ).unwrap();
+        }
+
+        // DB 2: Shadow copy deletion
+        {
+            let conn2 = Connection::open(&db2_path).unwrap();
+            db::create_schema(&conn2, &cols2).unwrap();
+            conn2.execute(
+                "INSERT INTO rows (row_num, cmd, user) VALUES (1, 'vssadmin delete shadows /all /quiet', 'bob')",
+                [],
+            ).unwrap();
+        }
+
+        let files = vec![
+            FileTarget {
+                path: "host_a_logs.csv".to_string(),
+                sheet: None,
+                cache_db_path: Some(db1_path.to_string_lossy().to_string()),
+            },
+            FileTarget {
+                path: "host_b_logs.csv".to_string(),
+                sheet: None,
+                cache_db_path: Some(db2_path.to_string_lossy().to_string()),
+            },
+        ];
+
+        let summary = scan_all_files_intel_matches_internal(files, Some(true), |_| {})
+            .expect("multi file scan should succeed");
+
+        assert_eq!(summary.total_files_scanned, 2);
+        assert_eq!(summary.file_breakdowns.len(), 2);
+        assert!(summary.total_match_count >= 2);
+        assert!(summary.total_matched_rows >= 2);
+        assert!(summary.correlated_events.len() >= 2);
+
+        let files_in_events: std::collections::HashSet<String> = summary
+            .correlated_events
+            .iter()
+            .map(|e| e.file_name.clone())
+            .collect();
+        assert!(files_in_events.contains("host_a_logs.csv"));
+        assert!(files_in_events.contains("host_b_logs.csv"));
+
+        let _ = std::fs::remove_file(&db1_path);
+        let _ = std::fs::remove_file(&db2_path);
     }
 }

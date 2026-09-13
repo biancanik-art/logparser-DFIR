@@ -20,11 +20,11 @@ use std::path::Path;
 use std::time::Instant;
 use tokenizers::Tokenizer;
 
-pub const MODEL_RESOURCE_PATH: &str = "models/qwen2.5-1.5b-instruct-q4_k_m.gguf";
+pub const MODEL_RESOURCE_PATH: &str = "models/qwen2.5-3b-instruct-q4_k_m.gguf";
 pub const TOKENIZER_RESOURCE_PATH: &str = "models/qwen2.5-1.5b-instruct-tokenizer.json";
-pub const MODEL_NAME: &str = "Qwen2.5-1.5B-Instruct";
-pub const MODEL_VERSION: &str = "Q4_K_M@91cad51170dc346986eccefdc2dd33a9da36ead9";
-pub const MODEL_SHA256: &str = "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e";
+pub const MODEL_NAME: &str = "Qwen2.5-3B-Instruct";
+pub const MODEL_VERSION: &str = "Q4_K_M@7dabda4d13d513e3e842b20f0d435c732f172cbe";
+pub const MODEL_SHA256: &str = "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d";
 pub const TOKENIZER_SHA256: &str =
     "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539";
 pub const PROVIDER: &str = "local-candle";

@@ -27,17 +27,17 @@ INITIAL_RETRY_DELAY_SECONDS = 2
 
 RESOURCES = (
     {
-        "label": "Qwen2.5-1.5B-Instruct Q4_K_M model",
-        "filename": "qwen2.5-1.5b-instruct-q4_k_m.gguf",
+        "label": "Qwen2.5-3B-Instruct Q4_K_M model",
+        "filename": "qwen2.5-3b-instruct-q4_k_m.gguf",
         "url": (
-            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/resolve/"
-            "91cad51170dc346986eccefdc2dd33a9da36ead9/"
-            "qwen2.5-1.5b-instruct-q4_k_m.gguf"
+            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/"
+            "7dabda4d13d513e3e842b20f0d435c732f172cbe/"
+            "qwen2.5-3b-instruct-q4_k_m.gguf"
         ),
-        "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+        "sha256": "626b4a6678b86442240e33df819e00132d3ba7dddfe1cdc4fbb18e0a9615c62d",
     },
     {
-        "label": "Qwen2.5-1.5B-Instruct tokenizer",
+        "label": "Qwen2.5 tokenizer",
         "filename": "qwen2.5-1.5b-instruct-tokenizer.json",
         "url": (
             "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/"

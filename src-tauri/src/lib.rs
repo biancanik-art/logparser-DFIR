@@ -67,6 +67,7 @@ pub fn run() {
             commands::get_unified_ioc_events,
             commands::export_unified_multisheet_xlsx,
             commands::get_row_raw_details,
+            commands::scan_all_files_intel_matches,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

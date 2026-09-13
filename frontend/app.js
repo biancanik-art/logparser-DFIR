@@ -89,6 +89,7 @@
   const clearBtn = document.getElementById("clear-btn");
   const filterRowTemplate = document.getElementById("filter-row-template");
   const suspiciousScanBtn = document.getElementById("suspicious-scan-btn");
+  const suspiciousScanActiveBtn = document.getElementById("suspicious-scan-active-btn");
   const includeBecChk = document.getElementById("include-bec-chk");
   const extractIocsBtn = document.getElementById("extract-iocs-btn");
   const copyIocsBtn = document.getElementById("copy-iocs-btn");
@@ -895,6 +896,21 @@
   function updateEvidenceColumnsUi() {
     const evidenceColumns = inferredEvidenceColumns();
     const hasLoadedTable = columns.length > 0;
+    const isMultiFile = loadedFiles && loadedFiles.length > 1;
+
+    if (isMultiFile) {
+      suspiciousScanBtn.textContent = `⚡ Run Threat Enrichment (All ${loadedFiles.length} Files)`;
+      if (suspiciousScanActiveBtn) {
+        suspiciousScanActiveBtn.style.display = "inline-flex";
+        suspiciousScanActiveBtn.disabled = !hasLoadedTable || roleDetectionInFlight || intelScanInFlight;
+      }
+    } else {
+      suspiciousScanBtn.textContent = "Run Threat Enrichment";
+      if (suspiciousScanActiveBtn) {
+        suspiciousScanActiveBtn.style.display = "none";
+      }
+    }
+
     suspiciousScanBtn.disabled =
       !hasLoadedTable ||
       roleDetectionInFlight ||
@@ -909,9 +925,13 @@
       const isFallback = !columnRoleSuggestions.some(
         (row) => row.status !== "rejected" && EVIDENCE_ROLES.has(row.role) && row.sqlName
       );
-      evidenceColumnsLabel.textContent = `Enrichment will inspect: ${evidenceColumns
-        .map(columnDisplayName)
-        .join(", ")}${isFallback ? " (all columns)" : ""}`;
+      if (isMultiFile) {
+        evidenceColumnsLabel.textContent = `Enriching across all ${loadedFiles.length} loaded files.`;
+      } else {
+        evidenceColumnsLabel.textContent = `Enrichment will inspect: ${evidenceColumns
+          .map(columnDisplayName)
+          .join(", ")}${isFallback ? " (all columns)" : ""}`;
+      }
     }
   }
 
@@ -1688,15 +1708,23 @@
     const kpiGrid = document.createElement("div");
     kpiGrid.className = "intel-kpi-grid";
 
+    const isMultiFileSummary = summary.totalFilesScanned && summary.totalFilesScanned > 1;
+    const scannedText = isMultiFileSummary
+      ? `${summary.totalFilesScanned} Files (${(summary.rowsScanned || 0).toLocaleString()} rows)`
+      : `${(summary.rowsScanned || 0).toLocaleString()} rows`;
+    const scannedSub = isMultiFileSummary
+      ? "All loaded datasets evaluated"
+      : "All imported records evaluated";
+
     const kpiScanned = createKpiCard(
       "Scanned Evidence",
-      `${summary.rowsScanned.toLocaleString()} rows`,
-      "All imported records evaluated"
+      scannedText,
+      scannedSub
     );
     const kpiMatched = createKpiCard(
       "Threat Detections",
-      `${summary.matchedRows.toLocaleString()} rows`,
-      `${summary.matchCount.toLocaleString()} total TTP matches`
+      `${(summary.matchedRows || 0).toLocaleString()} rows`,
+      `${(summary.matchCount || 0).toLocaleString()} total TTP matches`
     );
     const tacticsCount = (summary.tactics || []).length;
     const kpiTactics = createKpiCard(
@@ -1714,16 +1742,70 @@
     kpiGrid.append(kpiScanned, kpiMatched, kpiTactics, kpiTechniques);
     container.appendChild(kpiGrid);
 
-    // 2. Action Bar with Forensic Threat Report Button & Guidance
+    // Multi-File Incident Breakdown
+    if (summary.fileBreakdowns && summary.fileBreakdowns.length > 1) {
+      const fileSec = document.createElement("div");
+      fileSec.className = "intel-section-title";
+      fileSec.style.marginTop = "14px";
+      fileSec.innerHTML = `<span>📁 Multi-File Incident Breakdown <span class="sidebar-note">(${summary.fileBreakdowns.length} files analyzed)</span></span>`;
+      container.appendChild(fileSec);
+
+      const fileChips = document.createElement("div");
+      fileChips.style.display = "flex";
+      fileChips.style.flexWrap = "wrap";
+      fileChips.style.gap = "8px";
+      fileChips.style.margin = "8px 0 16px 0";
+
+      summary.fileBreakdowns.forEach((fb) => {
+        const chip = document.createElement("div");
+        chip.style.cssText = "display: flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--bg-card, #1e293b); border: 1px solid var(--border-color, #334155); border-radius: 6px; font-size: 12px; cursor: pointer; transition: all 0.15s ease;";
+        const isError = !!fb.error;
+        const countColor = isError ? "#ef4444" : (fb.matchCount > 0 ? "#f59e0b" : "#10b981");
+        const countText = isError ? "error" : `${fb.matchCount} threats (${fb.matchedRows} rows)`;
+        chip.innerHTML = `<strong>📄 ${escapeHtml(fb.fileName)}</strong> <span style="background:${countColor}22; color:${countColor}; padding: 2px 6px; border-radius: 4px; font-weight: 600; font-size: 11px;">${countText}</span>`;
+        if (fb.topTactics && fb.topTactics.length > 0) {
+          const tacticsBadge = document.createElement("span");
+          tacticsBadge.style.cssText = "color: var(--text-muted, #94a3b8); font-size: 11px;";
+          tacticsBadge.textContent = fb.topTactics.slice(0, 2).join(", ");
+          chip.appendChild(tacticsBadge);
+        }
+        chip.title = isError ? fb.error : `Click to switch view to ${fb.fileName}`;
+        chip.addEventListener("click", () => {
+          const targetIdx = (loadedFiles || []).findIndex(f => f.path === fb.path);
+          if (targetIdx !== -1 && targetIdx !== activeFileIndex) {
+            switchActiveFile(targetIdx);
+          }
+        });
+        fileChips.appendChild(chip);
+      });
+      container.appendChild(fileChips);
+    }
+
+    // 2. Action Bar with Forensic Threat Report Button, Unified Grid Pivot & Guidance
     const actionBar = document.createElement("div");
     actionBar.className = "intel-actions-bar";
 
+    if (summary.correlatedEvents && summary.correlatedEvents.length > 0) {
+      const unifiedBtn = document.createElement("button");
+      unifiedBtn.className = "btn btn-primary btn-small";
+      unifiedBtn.style.background = "#4f46e5";
+      unifiedBtn.style.color = "#ffffff";
+      unifiedBtn.style.fontWeight = "600";
+      unifiedBtn.innerHTML = `🔍 View All Threat Matches in Unified Grid (${summary.correlatedEvents.length})`;
+      unifiedBtn.title = "Open all threat matches across all files in chronological Unified Grid";
+      unifiedBtn.addEventListener("click", () => {
+        renderUnifiedCorrelatedGrid(summary.correlatedEvents, "Multi-File Threat Enrichment Findings");
+      });
+      actionBar.appendChild(unifiedBtn);
+    }
+
     const reportBtn = document.createElement("button");
-    reportBtn.className = "btn btn-primary btn-small";
+    reportBtn.className = "btn btn-secondary btn-small";
     reportBtn.innerHTML = "📊 Generate Forensic Threat Report (XLSX)";
     reportBtn.title =
       "Export full multi-tab forensic workbook with executive summary, timeline, ATT&CK matrix, and evidence";
     reportBtn.addEventListener("click", () => doReportExport());
+    actionBar.appendChild(reportBtn);
 
     const hintText = document.createElement("span");
     hintText.className = "sidebar-note";
@@ -1731,7 +1813,7 @@
     hintText.textContent =
       "💡 Click any tactic, technique, or attack chain below to immediately isolate and inspect those rows in the Evidence Grid.";
 
-    actionBar.append(reportBtn, hintText);
+    actionBar.appendChild(hintText);
     container.appendChild(actionBar);
 
     if (summary.customLibraryError) {
@@ -3755,22 +3837,60 @@
     }
   }
 
-  async function runIntelScan(evidenceColumns = inferredEvidenceColumns()) {
-    if (!evidenceColumns || evidenceColumns.length === 0) {
-      throw new Error("no evidence columns were inferred; choose columns in Data mapping first");
+  async function runIntelScan(optionsOrCols = null) {
+    let evidenceColumns = null;
+    let scanAllFiles = loadedFiles && loadedFiles.length > 1;
+
+    if (Array.isArray(optionsOrCols)) {
+      evidenceColumns = optionsOrCols;
+      scanAllFiles = false;
+    } else if (optionsOrCols && typeof optionsOrCols === "object") {
+      if (typeof optionsOrCols.allFiles === "boolean") {
+        scanAllFiles = optionsOrCols.allFiles;
+      }
+      if (Array.isArray(optionsOrCols.evidenceColumns)) {
+        evidenceColumns = optionsOrCols.evidenceColumns;
+      }
     }
 
+    const isMultiFile = scanAllFiles && loadedFiles && loadedFiles.length > 1;
     const includeBec = includeBecChk ? includeBecChk.checked : true;
     intelScanInFlight = true;
     updateEvidenceColumnsUi();
-    showProgress("Running optional threat enrichment...", 0);
+    const label = isMultiFile
+      ? `Scanning ${loadedFiles.length} files for threats & ATT&CK tactics...`
+      : "Running threat enrichment on active evidence...";
+    showProgress(label, 0);
     try {
-      const summary = await invoke("scan_intel_matches", { evidenceColumns, includeBec });
+      let summary;
+      if (isMultiFile) {
+        const filesPayload = loadedFiles.map((f) => ({
+          path: f.path,
+          sheet: f.sheet || null,
+          cacheDbPath: f.cacheDbPath || null,
+        }));
+        summary = await invoke("scan_all_files_intel_matches", { files: filesPayload, includeBec });
+      } else {
+        if (currentPath) {
+          const filesPayload = [{
+            path: currentPath,
+            sheet: currentSheet || null,
+            cacheDbPath: currentCacheDbPath || null,
+          }];
+          summary = await invoke("scan_all_files_intel_matches", { files: filesPayload, includeBec });
+        } else {
+          const colsToScan = evidenceColumns || inferredEvidenceColumns();
+          if (!colsToScan || colsToScan.length === 0) {
+            throw new Error("no evidence columns were inferred; choose columns in Data mapping first");
+          }
+          summary = await invoke("scan_intel_matches", { evidenceColumns: colsToScan, includeBec });
+        }
+      }
       intelScanSummaryResult = summary;
       renderScanSummary(summary);
       return summary;
     } catch (err) {
-      console.error("scan_intel_matches failed", err);
+      console.error("Threat enrichment scan failed", err);
       throw err;
     } finally {
       hideProgress();
@@ -6212,8 +6332,18 @@
   });
 
   suspiciousScanBtn.addEventListener("click", () => {
-    runIntelScan().catch((err) => alert(`Threat enrichment failed: ${err}`));
+    runIntelScan({ allFiles: loadedFiles && loadedFiles.length > 1 }).catch((err) =>
+      alert(`Threat enrichment failed: ${err}`)
+    );
   });
+
+  if (suspiciousScanActiveBtn) {
+    suspiciousScanActiveBtn.addEventListener("click", () => {
+      runIntelScan({ allFiles: false }).catch((err) =>
+        alert(`Threat enrichment failed: ${err}`)
+      );
+    });
+  }
 
   extractIocsBtn.addEventListener("click", () => {
     runIocExtraction().catch((err) => alert(`IOC extraction failed: ${err}`));

@@ -130,9 +130,11 @@ pub fn classify_ask(text: &str) -> AnalystIntent {
         "sequence",
         "correlate",
         "correlated",
+        "correlation",
+        "correlating",
         "progression",
         "trace",
-    ]) {
+    ]) || has_phrase(&["cross-file", "cross file", "across files", "across all files"]) {
         return AnalystIntent::Chains;
     }
     if has_phrase(&[
@@ -898,7 +900,7 @@ fn load_active_roles(conn: &Connection) -> Result<Vec<(String, String)>> {
     Ok(rows)
 }
 
-fn row_time_available(conn: &Connection) -> Result<bool> {
+pub(crate) fn row_time_available(conn: &Connection) -> Result<bool> {
     if !table_exists(conn, "_row_time")? {
         return Ok(false);
     }
@@ -1907,6 +1909,212 @@ fn timeline_section(
     ))
 }
 
+pub fn extract_correlated_events_for_rows(
+    conn: &rusqlite::Connection,
+    columns: &[db::ColumnMeta],
+    row_ids: &[i64],
+    file_name: &str,
+    file_path: &str,
+) -> Vec<CorrelatedTimelineEvent> {
+    if row_ids.is_empty() {
+        return Vec::new();
+    }
+
+    let has_time = row_time_available(conn).unwrap_or(false);
+    let roles = load_active_roles(conn).unwrap_or_default();
+    let role_map: HashMap<String, String> = roles.into_iter().collect();
+
+    let user_col = role_map.get("user").cloned().or_else(|| {
+        columns
+            .iter()
+            .find(|c| {
+                let l = c.original_name.to_lowercase();
+                (l.contains("user") || l.contains("account") || l.contains("username") || l.contains("upn") || l.contains("actor"))
+                    && !l.contains("hosted")
+            })
+            .map(|c| c.sql_name.clone())
+    });
+
+    let host_col = role_map.get("host").cloned().filter(|c| !c.to_lowercase().contains("hosted")).or_else(|| {
+        columns
+            .iter()
+            .find(|c| {
+                let l = c.original_name.to_lowercase();
+                (l.contains("host")
+                    || l.contains("computer")
+                    || l.contains("workstation")
+                    || l.contains("device")
+                    || l.contains("machine"))
+                    && !l.contains("hosted")
+                    && !l.contains("ghost")
+            })
+            .map(|c| c.sql_name.clone())
+    });
+
+    let action_col = role_map
+        .get("commandline")
+        .cloned()
+        .or_else(|| role_map.get("process_name").cloned())
+        .or_else(|| {
+            columns
+                .iter()
+                .find(|c| {
+                    let l = c.original_name.to_lowercase();
+                    (l.contains("operation")
+                        || l.contains("activity")
+                        || l.contains("command")
+                        || l.contains("process")
+                        || l.contains("action")
+                        || l.contains("event_name")
+                        || l.contains("eventname")
+                        || l.contains("workload")
+                        || l.contains("event")
+                        || l.contains("message")
+                        || l.contains("detail"))
+                        && Some(&c.sql_name) != user_col.as_ref()
+                        && Some(&c.sql_name) != host_col.as_ref()
+                        && !l.contains("hosted")
+                })
+                .map(|c| c.sql_name.clone())
+        })
+        .or_else(|| {
+            columns
+                .iter()
+                .find(|c| {
+                    c.inferred_type == "text"
+                        && Some(&c.sql_name) != user_col.as_ref()
+                        && Some(&c.sql_name) != host_col.as_ref()
+                        && !c.original_name.to_lowercase().contains("hosted")
+                })
+                .map(|c| c.sql_name.clone())
+        });
+
+    let _ = conn.execute(
+        "CREATE TEMP TABLE IF NOT EXISTS _timeline_temp (row_num INTEGER PRIMARY KEY)",
+        [],
+    );
+    let _ = conn.execute("DELETE FROM _timeline_temp", []);
+    if let Ok(mut insert_stmt) =
+        conn.prepare("INSERT OR IGNORE INTO _timeline_temp (row_num) VALUES (?1)")
+    {
+        for r in row_ids {
+            let _ = insert_stmt.execute([r]);
+        }
+    }
+
+    let user_sql = user_col
+        .as_ref()
+        .map(|c| format!(", r.{}", db::quote_ident(c)))
+        .unwrap_or_default();
+    let host_sql = host_col
+        .as_ref()
+        .map(|c| format!(", r.{}", db::quote_ident(c)))
+        .unwrap_or_default();
+    let action_sql = action_col
+        .as_ref()
+        .map(|c| format!(", r.{}", db::quote_ident(c)))
+        .unwrap_or_default();
+
+    let query = if has_time {
+        format!(
+            "SELECT r.row_num, rt.epoch_ms, rt.utc_text {user_sql} {host_sql} {action_sql}
+             FROM _timeline_temp t
+             JOIN rows r ON r.row_num = t.row_num
+             LEFT JOIN _row_time rt ON rt.row_num = r.row_num
+             ORDER BY COALESCE(rt.epoch_ms, 9223372036854775807) ASC, r.row_num ASC"
+        )
+    } else {
+        format!(
+            "SELECT r.row_num, NULL, NULL {user_sql} {host_sql} {action_sql}
+             FROM _timeline_temp t
+             JOIN rows r ON r.row_num = t.row_num
+             ORDER BY r.row_num ASC"
+        )
+    };
+
+    let mut intel_map: HashMap<i64, Vec<String>> = HashMap::new();
+    if table_exists(conn, "_intel_match").unwrap_or(false) {
+        let intel_query = "SELECT m.row_num, m.technique_id, m.technique_name
+             FROM _intel_match m
+             JOIN _timeline_temp t ON t.row_num = m.row_num
+             ORDER BY m.score DESC";
+        let mut stmt = conn.prepare(intel_query);
+        if let Ok(ref mut s) = stmt {
+            if let Ok(rows) = s.query_map([], |r| {
+                Ok((
+                    r.get::<_, i64>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, String>(2)?,
+                ))
+            }) {
+                for item in rows.flatten() {
+                    let entry = intel_map.entry(item.0).or_default();
+                    if entry.len() < 2 {
+                        entry.push(format!("{} {}", item.1, item.2));
+                    }
+                }
+            }
+        }
+    }
+
+    let mut col_offset = 3;
+    let user_idx = if user_col.is_some() {
+        let idx = col_offset;
+        col_offset += 1;
+        Some(idx)
+    } else {
+        None
+    };
+    let host_idx = if host_col.is_some() {
+        let idx = col_offset;
+        col_offset += 1;
+        Some(idx)
+    } else {
+        None
+    };
+    let action_idx = if action_col.is_some() {
+        let idx = col_offset;
+        Some(idx)
+    } else {
+        None
+    };
+
+    let mut events = Vec::new();
+    if let Ok(mut stmt) = conn.prepare(&query) {
+        let rows_res = stmt.query_map([], |r| {
+            let user = user_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+            let host = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+            let action = action_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                user,
+                host,
+                action,
+            ))
+        });
+        if let Ok(rows) = rows_res {
+            for r in rows.flatten() {
+                let row_num = r.0;
+                let tags = intel_map.get(&row_num).cloned().unwrap_or_default();
+                events.push(CorrelatedTimelineEvent {
+                    row_num,
+                    file_name: file_name.to_string(),
+                    path: file_path.to_string(),
+                    epoch_ms: r.1,
+                    utc_text: r.2,
+                    user: r.3,
+                    host: r.4,
+                    action: r.5,
+                    mitre_tags: tags,
+                });
+            }
+        }
+    }
+    events
+}
+
 pub fn collect_events_across_files(
     targets: &[FileTarget],
     keywords: &[String],
@@ -1966,199 +2174,14 @@ pub fn collect_events_across_files(
 
         scanned_count += 1;
 
-        let has_time = row_time_available(&conn).unwrap_or(false);
-        let roles = load_active_roles(&conn).unwrap_or_default();
-        let role_map: HashMap<String, String> = roles.into_iter().collect();
-
-        let user_col = role_map.get("user").cloned().or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    let l = c.original_name.to_lowercase();
-                    (l.contains("user") || l.contains("account") || l.contains("username") || l.contains("upn") || l.contains("actor"))
-                        && !l.contains("hosted")
-                })
-                .map(|c| c.sql_name.clone())
-        });
-
-        let host_col = role_map.get("host").cloned().filter(|c| !c.to_lowercase().contains("hosted")).or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    let l = c.original_name.to_lowercase();
-                    (l.contains("host")
-                        || l.contains("computer")
-                        || l.contains("workstation")
-                        || l.contains("device")
-                        || l.contains("machine"))
-                        && !l.contains("hosted")
-                        && !l.contains("ghost")
-                })
-                .map(|c| c.sql_name.clone())
-        });
-
-        let action_col = role_map
-            .get("commandline")
-            .cloned()
-            .or_else(|| role_map.get("process_name").cloned())
-            .or_else(|| {
-                columns
-                    .iter()
-                    .find(|c| {
-                        let l = c.original_name.to_lowercase();
-                        (l.contains("operation")
-                            || l.contains("activity")
-                            || l.contains("command")
-                            || l.contains("process")
-                            || l.contains("action")
-                            || l.contains("event_name")
-                            || l.contains("eventname")
-                            || l.contains("workload")
-                            || l.contains("event")
-                            || l.contains("message")
-                            || l.contains("detail"))
-                            && Some(&c.sql_name) != user_col.as_ref()
-                            && Some(&c.sql_name) != host_col.as_ref()
-                            && !l.contains("hosted")
-                    })
-                    .map(|c| c.sql_name.clone())
-            })
-            .or_else(|| {
-                columns
-                    .iter()
-                    .find(|c| {
-                        c.inferred_type == "text"
-                            && Some(&c.sql_name) != user_col.as_ref()
-                            && Some(&c.sql_name) != host_col.as_ref()
-                            && !c.original_name.to_lowercase().contains("hosted")
-                    })
-                    .map(|c| c.sql_name.clone())
-            });
-
-        let _ = conn.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS _timeline_temp (row_num INTEGER PRIMARY KEY)",
-            [],
+        let events = extract_correlated_events_for_rows(
+            &conn,
+            &columns,
+            &row_ids,
+            &file_name,
+            &target.path,
         );
-        let _ = conn.execute("DELETE FROM _timeline_temp", []);
-        if let Ok(mut insert_stmt) =
-            conn.prepare("INSERT OR IGNORE INTO _timeline_temp (row_num) VALUES (?1)")
-        {
-            for r in &row_ids {
-                let _ = insert_stmt.execute([r]);
-            }
-        }
-
-        let user_sql = user_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-        let host_sql = host_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-        let action_sql = action_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-
-        let query = if has_time {
-            format!(
-                "SELECT r.row_num, rt.epoch_ms, rt.utc_text {user_sql} {host_sql} {action_sql}
-                 FROM _timeline_temp t
-                 JOIN rows r ON r.row_num = t.row_num
-                 LEFT JOIN _row_time rt ON rt.row_num = r.row_num
-                 ORDER BY COALESCE(rt.epoch_ms, 9223372036854775807) ASC, r.row_num ASC"
-            )
-        } else {
-            format!(
-                "SELECT r.row_num, NULL, NULL {user_sql} {host_sql} {action_sql}
-                 FROM _timeline_temp t
-                 JOIN rows r ON r.row_num = t.row_num
-                 ORDER BY r.row_num ASC"
-            )
-        };
-
-        let mut intel_map: HashMap<i64, Vec<String>> = HashMap::new();
-        if table_exists(&conn, "_intel_match").unwrap_or(false) {
-            let intel_query = "SELECT m.row_num, m.technique_id, m.technique_name
-                 FROM _intel_match m
-                 JOIN _timeline_temp t ON t.row_num = m.row_num
-                 ORDER BY m.score DESC";
-            let mut stmt = conn.prepare(intel_query);
-            if let Ok(ref mut s) = stmt {
-                if let Ok(rows) = s.query_map([], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                }) {
-                    for item in rows.flatten() {
-                        let entry = intel_map.entry(item.0).or_default();
-                        if entry.len() < 2 {
-                            entry.push(format!("{} {}", item.1, item.2));
-                        }
-                    }
-                }
-            }
-        }
-
-        let mut col_offset = 3;
-        let user_idx = if user_col.is_some() {
-            let idx = col_offset;
-            col_offset += 1;
-            Some(idx)
-        } else {
-            None
-        };
-        let host_idx = if host_col.is_some() {
-            let idx = col_offset;
-            col_offset += 1;
-            Some(idx)
-        } else {
-            None
-        };
-        let action_idx = if action_col.is_some() {
-            let idx = col_offset;
-            Some(idx)
-        } else {
-            None
-        };
-
-        {
-            let mut stmt = conn.prepare(&query);
-            if let Ok(ref mut s) = stmt {
-                if let Ok(rows) = s.query_map([], |r| {
-                    let user = user_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    let host = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    let action = action_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, Option<i64>>(1)?,
-                        r.get::<_, Option<String>>(2)?,
-                        user,
-                        host,
-                        action,
-                    ))
-                }) {
-                    for r in rows.flatten() {
-                        let row_num = r.0;
-                        let tags = intel_map.get(&row_num).cloned().unwrap_or_default();
-                        all_events.push(CorrelatedTimelineEvent {
-                            row_num,
-                            file_name: file_name.clone(),
-                            path: target.path.clone(),
-                            epoch_ms: r.1,
-                            utc_text: r.2,
-                            user: r.3,
-                            host: r.4,
-                            action: r.5,
-                            mitre_tags: tags,
-                        });
-                    }
-                }
-            }
-        }
+        all_events.extend(events);
     }
 
     // Sort all events chronologically across all files
