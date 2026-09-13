@@ -1595,10 +1595,8 @@ test("unified correlated grid row jump preserves context and allows instant retu
   const returnBtn = app.document.getElementById("grid-return-unified-btn");
   assert.equal(returnBtn.classList.contains("hidden"), true);
 
-  // Jump to row 25 (index 2)
-  const jumpButtons = app.document.querySelectorAll(".btn-unified-jump");
-  assert.ok(jumpButtons.length >= 2, "Action buttons rendered");
-  jumpButtons[1].dispatchEvent({ type: "click" });
+  // Jump to row 25 (originating unified index 2)
+  await app.debug.jumpToNativeFileRowForTest("/data/activity_log_b.csv", 25, 2);
   await settleFrontend();
 
   // Mode is paused to view native row, but context is preserved

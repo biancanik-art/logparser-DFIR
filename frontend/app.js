@@ -1449,21 +1449,28 @@
     activeDrawerRowData = rowData;
     activeDrawerRawDetails = null;
 
-    unifiedDrawerTitle.textContent = `${rowData.fileName} — Event #${rowData._unifiedIndex} (Row #${rowData.row_num})`;
-    unifiedDrawerMeta.innerHTML = `
-      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">File:</span> <code>${escapeHtml(rowData.fileName)}</code></div>
-      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Native Row:</span> <strong>#${rowData.row_num}</strong></div>
-      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Time:</span> ${escapeHtml(rowData.utcText)}</div>
-      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">User:</span> ${escapeHtml(rowData.user)}</div>
-      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Host:</span> ${escapeHtml(rowData.host)}</div>
-      <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Action:</span> ${escapeHtml(rowData.action)}</div>
-      ${Array.isArray(rowData.mitreTags) && rowData.mitreTags.length > 0 ? `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Tags:</span> ${rowData.mitreTags.map((t) => `<span class="cross-ioc-meta-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3);margin-right:3px;">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
-    `;
+    const rowNum = rowData.row_num || rowData.rowNum || 1;
+    const unifiedIdx = rowData._unifiedIndex || 1;
 
-    unifiedDrawerFilter.value = "";
-    unifiedDrawerBody.innerHTML = `<div class="unified-drawer-loading">Fetching all raw fields from source database…</div>`;
+    if (unifiedDrawerTitle) {
+      unifiedDrawerTitle.textContent = `${rowData.fileName || "File"} — Event #${unifiedIdx} (Row #${rowNum})`;
+    }
+    if (unifiedDrawerMeta) {
+      unifiedDrawerMeta.innerHTML = `
+        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">File:</span> <code>${escapeHtml(rowData.fileName || "")}</code></div>
+        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Native Row:</span> <strong>#${rowNum}</strong></div>
+        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Time:</span> ${escapeHtml(rowData.utcText || "")}</div>
+        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">User:</span> ${escapeHtml(rowData.user || "")}</div>
+        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Host:</span> ${escapeHtml(rowData.host || "")}</div>
+        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Action:</span> ${escapeHtml(rowData.action || "")}</div>
+        ${Array.isArray(rowData.mitreTags) && rowData.mitreTags.length > 0 ? `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Tags:</span> ${rowData.mitreTags.map((t) => `<span class="cross-ioc-meta-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3);margin-right:3px;">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
+      `;
+    }
+
+    if (unifiedDrawerFilter) unifiedDrawerFilter.value = "";
+    if (unifiedDrawerBody) unifiedDrawerBody.innerHTML = `<div class="unified-drawer-loading">Fetching all raw fields from source database…</div>`;
     unifiedDetailDrawer.classList.remove("hidden");
-    unifiedDrawerBackdrop.classList.remove("hidden");
+    if (unifiedDrawerBackdrop) unifiedDrawerBackdrop.classList.remove("hidden");
 
     try {
       const targetFile = (loadedFiles || []).find(
@@ -1475,7 +1482,7 @@
           sheet: targetFile?.sheet || null,
           cacheDbPath: targetFile?.cacheDbPath || null,
         },
-        rowNum: rowData.row_num,
+        rowNum,
       });
       activeDrawerRawDetails = raw;
       renderDrawerFields(raw.fields || []);
@@ -6326,6 +6333,8 @@
     });
   }
 
+  closeUnifiedRowDetailDrawer();
+
   if (unifiedDrawerCloseBtn) {
     unifiedDrawerCloseBtn.addEventListener("click", closeUnifiedRowDetailDrawer);
   }
@@ -6744,6 +6753,9 @@
     },
     returnToUnifiedCorrelatedGridForTest() {
       return returnToUnifiedCorrelatedGrid();
+    },
+    jumpToNativeFileRowForTest(targetPath, rowNum, originatingUnifiedIndex) {
+      return jumpToNativeFileRow(targetPath, rowNum, originatingUnifiedIndex);
     },
     getSavedUnifiedContextForTest() {
       return savedUnifiedContext;
