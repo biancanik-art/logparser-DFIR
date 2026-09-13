@@ -1606,7 +1606,8 @@ test("unified correlated grid row jump preserves context and allows instant retu
   assert.equal(savedContext.jumpedIndex, 2);
   assert.equal(savedContext.jumpedRowNum, 25);
   assert.equal(returnBtn.classList.contains("hidden"), false);
-  assert.ok(returnBtn.textContent.includes("Row #2"));
+  const returnIdx = app.document.getElementById("grid-return-unified-idx");
+  assert.ok(returnIdx.textContent.includes("Row #2"));
 
   // Click return button -> restores unified grid and returns to initial position
   returnBtn.dispatchEvent({ type: "click" });
