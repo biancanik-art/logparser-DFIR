@@ -1742,11 +1742,18 @@ pub async fn ask_analyst(
             let is_cross_file = intent == analyst::AnalystIntent::Timeline
                 || intent == analyst::AnalystIntent::Hunt
                 || intent == analyst::AnalystIntent::Chains
+                || intent == analyst::AnalystIntent::Map
                 || lower_ask.contains("across")
                 || lower_ask.contains("all files")
                 || lower_ask.contains("correlate")
                 || lower_ask.contains("correlation")
-                || lower_ask.contains("files");
+                || lower_ask.contains("files")
+                || lower_ask.contains("suspicious")
+                || lower_ask.contains("attack")
+                || lower_ask.contains("breach")
+                || lower_ask.contains("rogue")
+                || lower_ask.contains("device")
+                || lower_ask.contains("user");
 
             if is_cross_file {
                 let targets = target_files.clone();

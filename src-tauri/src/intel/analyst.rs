@@ -137,6 +137,84 @@ pub fn classify_ask(text: &str) -> AnalystIntent {
     ]) || has_phrase(&["cross-file", "cross file", "across files", "across all files"]) {
         return AnalystIntent::Chains;
     }
+    // Security and threat hunting keywords take precedence over generic summarization/profiling.
+    // E.g., "summarize suspicious activity and map to MITRE" is a threat hunt/map, NOT a dumb profile.
+    let has_hunt_topic = has_word(&[
+        "inbox",
+        "forward",
+        "forwarding",
+        "consent",
+        "oauth",
+        "powershell",
+        "pwsh",
+        "encoded",
+        "mimikatz",
+        "dump",
+        "lsass",
+        "rogue",
+        "device",
+        "devices",
+        "persistence",
+        "privilege",
+        "escalation",
+        "escalat",
+        "exfiltration",
+        "exfiltrat",
+        "evasion",
+        "tamper",
+        "brute",
+        "spray",
+    ]) || has_phrase(&[
+        "rogue user",
+        "rogue users",
+        "rogue device",
+        "rogue devices",
+        "user agent",
+        "abnormal user",
+        "privilege escalation",
+        "defense evasion",
+        "data exfiltration",
+        "suspicious activity",
+        "password reset",
+    ]);
+
+    let has_security_terms = has_word(&[
+        "mitre",
+        "att&ck",
+        "attack",
+        "attacks",
+        "technique",
+        "techniques",
+        "tactic",
+        "tactics",
+        "dfir",
+        "map",
+        "mapped",
+        "mapping",
+        "suspicious",
+        "anomalies",
+        "anomalous",
+        "anomaly",
+        "unusual",
+        "malicious",
+        "ioc",
+        "iocs",
+        "indicator",
+        "indicators",
+        "breach",
+        "breaches",
+        "compromise",
+        "compromised",
+    ]);
+
+    if has_hunt_topic {
+        return AnalystIntent::Hunt;
+    }
+
+    if has_security_terms {
+        return AnalystIntent::Map;
+    }
+
     if has_phrase(&[
         "what is in",
         "what's in",
@@ -169,32 +247,7 @@ pub fn classify_ask(text: &str) -> AnalystIntent {
     ]) {
         return AnalystIntent::Profile;
     }
-    if has_word(&[
-        "mitre",
-        "att&ck",
-        "attack",
-        "attacks",
-        "technique",
-        "techniques",
-        "tactic",
-        "tactics",
-        "dfir",
-        "map",
-        "mapped",
-        "mapping",
-        "suspicious",
-        "anomalies",
-        "anomalous",
-        "anomaly",
-        "unusual",
-        "malicious",
-        "ioc",
-        "iocs",
-        "indicator",
-        "indicators",
-    ]) {
-        return AnalystIntent::Map;
-    }
+
     AnalystIntent::Hunt
 }
 
@@ -425,21 +478,21 @@ pub fn ask(
     }
 
     on_progress("compose");
-    let (hunt_sec, timeline_sec, hunt_summary, timeline_summary) = match intent {
+    let (hunt_sec, timeline_sec, hunt_summary, timeline_summary, matched_row_ids) = match intent {
         AnalystIntent::Timeline => {
             let keywords = extract_timeline_keywords(ask_text);
             let row_ids = find_matching_timeline_rows(conn, &keywords, columns)?;
             let (section, summary) = timeline_section(conn, columns, &keywords, &row_ids)?;
-            (None, Some(section), None, summary)
+            (None, Some(section), None, summary, Some(row_ids))
         }
         AnalystIntent::Hunt => {
             let (topic_name, patterns) = resolve_hunt_patterns(ask_text);
             let row_ids = find_hunt_rows(conn, &patterns, columns)?;
             let hunt_sec = build_hunt_section(conn, columns, &topic_name, &patterns, &row_ids)?;
             let (tl_sec, tl_sum) = timeline_section(conn, columns, &patterns, &row_ids)?;
-            (Some(hunt_sec), Some(tl_sec), Some((row_ids.len(), topic_name)), tl_sum)
+            (Some(hunt_sec), Some(tl_sec), Some((row_ids.len(), topic_name)), tl_sum, Some(row_ids))
         }
-        _ => (None, None, None, None),
+        _ => (None, None, None, None, None),
     };
 
     let sections = compose_sections(
@@ -461,6 +514,10 @@ pub fn ask(
         activity_summary.as_ref(),
     );
 
+    let correlated_events = matched_row_ids.as_ref().map(|rids| {
+        extract_correlated_events_for_rows(conn, columns, rids, "Evidence", "")
+    });
+
     Ok(AnalystAnswer {
         intent: intent.as_str().to_string(),
         headline,
@@ -471,7 +528,7 @@ pub fn ask(
         scan: scan_summary,
         anomalies: anomaly_summary,
         activity: activity_summary,
-        correlated_events: None,
+        correlated_events,
     })
 }
 
@@ -1150,17 +1207,180 @@ pub fn resolve_hunt_patterns(ask_text: &str) -> (String, Vec<String>) {
         || lower.contains("role")
         || lower.contains("assignment")
         || lower.contains("privilege")
-        || lower.contains("escalat");
+        || lower.contains("escalat")
+        || lower.contains("elevation");
 
-    if has_admin && !has_consent {
-        topics.push("Admin Operations & Role Assignments");
+    if has_admin {
+        topics.push("Privilege Escalation & Admin Roles");
         patterns.extend([
+            "Add member to role".to_string(),
             "Add-RoleGroupMember".to_string(),
             "Add-MsolRoleMember".to_string(),
             "New-ManagementRoleAssignment".to_string(),
+            "RoleDefinition".to_string(),
+            "Company Administrator".to_string(),
+            "Global Administrator".to_string(),
+            "Privileged Role".to_string(),
             "Elevated".to_string(),
             "Admin".to_string(),
             "Role".to_string(),
+            "4728".to_string(),
+            "4732".to_string(),
+            "4672".to_string(),
+        ]);
+    }
+
+    let has_users = lower.contains("rogue user")
+        || lower.contains("rogue account")
+        || lower.contains("new user")
+        || lower.contains("create user")
+        || lower.contains("user created")
+        || lower.contains("add user")
+        || lower.contains("password reset")
+        || lower.contains("sspr")
+        || lower.contains("account manipulation")
+        || lower.contains("user modification")
+        || (lower.contains("user") && (lower.contains("rogue") || lower.contains("abnormal") || lower.contains("suspicious")));
+
+    if has_users {
+        topics.push("Rogue Users & Account Modifications");
+        patterns.extend([
+            "Add user".to_string(),
+            "Create user".to_string(),
+            "New-LocalUser".to_string(),
+            "New-ADUser".to_string(),
+            "UserAccountCreated".to_string(),
+            "Account Created".to_string(),
+            "4720".to_string(),
+            "4722".to_string(),
+            "4738".to_string(),
+            "Update user".to_string(),
+            "Reset password".to_string(),
+            "Reset user password".to_string(),
+            "Self-service password reset".to_string(),
+            "Change user password".to_string(),
+            "UserPasswordCredential".to_string(),
+            "Set-MsolUserPassword".to_string(),
+        ]);
+    }
+
+    let has_devices = lower.contains("device")
+        || lower.contains("devices")
+        || lower.contains("registration")
+        || lower.contains("unmanaged")
+        || lower.contains("compliant")
+        || lower.contains("mdm")
+        || lower.contains("workplace");
+
+    if has_devices {
+        topics.push("Rogue & Unmanaged Devices");
+        patterns.extend([
+            "Register device".to_string(),
+            "DeviceRegistration".to_string(),
+            "Add registered owner to device".to_string(),
+            "Add device".to_string(),
+            "Join".to_string(),
+            "Workplace".to_string(),
+            "Device".to_string(),
+            "Unregistered".to_string(),
+            "Non-compliant".to_string(),
+            "NonCompliant".to_string(),
+            "Workplace Join".to_string(),
+        ]);
+    }
+
+    let has_exfil = lower.contains("exfiltration")
+        || lower.contains("exfiltrat")
+        || lower.contains("data theft")
+        || lower.contains("leak")
+        || lower.contains("export")
+        || lower.contains("mass download");
+
+    if has_exfil {
+        topics.push("Data Exfiltration & Bulk Exports");
+        patterns.extend([
+            "New-ComplianceSearchAction".to_string(),
+            "SearchExport".to_string(),
+            "eDiscovery".to_string(),
+            "Export".to_string(),
+            "MassDownload".to_string(),
+            "BulkDownload".to_string(),
+            "MailItemsAccessed".to_string(),
+            "Download".to_string(),
+        ]);
+    }
+
+    let has_evasion = lower.contains("defense evasion")
+        || lower.contains("evasion")
+        || lower.contains("tamper")
+        || lower.contains("clear log")
+        || lower.contains("disable audit");
+
+    if has_evasion {
+        topics.push("Defense Evasion & Tampering");
+        patterns.extend([
+            "Clear-EventLog".to_string(),
+            "wevtutil".to_string(),
+            "1102".to_string(),
+            "104".to_string(),
+            "Stop-Service".to_string(),
+            "Set-MpPreference".to_string(),
+            "DisableRule".to_string(),
+            "DeleteRule".to_string(),
+            "Disable-NetFirewallRule".to_string(),
+            "Disable user".to_string(),
+        ]);
+    }
+
+    let has_user_agent = lower.contains("user agent")
+        || lower.contains("useragent")
+        || lower.contains("abnormal");
+
+    if has_user_agent {
+        topics.push("Abnormal User Agents & Automation Tools");
+        patterns.extend([
+            "python-requests".to_string(),
+            "python".to_string(),
+            "curl".to_string(),
+            "powershell".to_string(),
+            "go-http".to_string(),
+            "wget".to_string(),
+            "postman".to_string(),
+            "httpclient".to_string(),
+            "headless".to_string(),
+        ]);
+    }
+
+    let has_general_threat = lower.contains("suspicious")
+        || lower.contains("attack")
+        || lower.contains("attacks")
+        || lower.contains("breach")
+        || lower.contains("breaches")
+        || lower.contains("threat")
+        || lower.contains("threats")
+        || lower.contains("compromise")
+        || lower.contains("mitre")
+        || lower.contains("att&ck");
+
+    if has_general_threat && topics.is_empty() {
+        topics.push("Suspicious Threat & Breach Indicators");
+        patterns.extend([
+            "Add member to role".to_string(),
+            "Add user".to_string(),
+            "Create user".to_string(),
+            "Reset password".to_string(),
+            "Register device".to_string(),
+            "ConsentToApplication".to_string(),
+            "ForwardTo".to_string(),
+            "UserLoginFailed".to_string(),
+            "powershell".to_string(),
+            "-enc".to_string(),
+            "mimikatz".to_string(),
+            "Elevated".to_string(),
+            "4625".to_string(),
+            "4720".to_string(),
+            "failure".to_string(),
+            "failed".to_string(),
         ]);
     }
 
@@ -1235,6 +1455,11 @@ pub fn find_hunt_rows(
             || l.contains("param")
             || l.contains("subject")
             || l.contains("destination")
+            || l.contains("user")
+            || l.contains("account")
+            || l.contains("device")
+            || l.contains("agent")
+            || l.contains("target")
         {
             prioritized_cols.push(col);
         } else {
@@ -2525,6 +2750,13 @@ pub fn multi_file_hunt(
         }
 
         // Extract MITRE matches for this file
+        if !table_exists(&conn, "_intel_match").unwrap_or(false) {
+            if let Ok(ev_cols) = guided_query::active_evidence_columns(&conn) {
+                if !ev_cols.is_empty() {
+                    let _ = matcher::scan_connection(&mut conn, &ev_cols, |_, _, _| {});
+                }
+            }
+        }
         if table_exists(&conn, "_intel_match").unwrap_or(false) {
             let sql = "SELECT technique_id, technique_name, COUNT(DISTINCT row_num), GROUP_CONCAT(DISTINCT row_num)
                        FROM _intel_match
@@ -2543,8 +2775,15 @@ pub fn multi_file_hunt(
                         .collect();
                     Ok((tid, tname, count, rnums))
                 }) {
+                    let ask_lower = ask_text.to_lowercase();
+                    let is_general_security = ask_lower.contains("mitre")
+                        || ask_lower.contains("att&ck")
+                        || ask_lower.contains("attack")
+                        || ask_lower.contains("suspicious")
+                        || ask_lower.contains("breach")
+                        || ask_lower.contains("threat");
                     for item in techs.flatten() {
-                        let matches_patterns = patterns.iter().any(|p| {
+                        let matches_patterns = is_general_security || patterns.iter().any(|p| {
                             let pl = p.to_lowercase();
                             item.0.to_lowercase().contains(&pl) || item.1.to_lowercase().contains(&pl)
                         });
@@ -2993,6 +3232,13 @@ mod tests {
             classify_ask("sequence of events for 192.168.1.5"),
             AnalystIntent::Timeline
         );
+        assert_eq!(
+            classify_ask("summarize suspicious activity and map this to MITRE ATT&CK and persistence and privilege escalation and data exfiltration and defense evasion and abnormal user agents"),
+            AnalystIntent::Hunt
+        );
+        assert_eq!(classify_ask("find rogue users"), AnalystIntent::Hunt);
+        assert_eq!(classify_ask("find rogue devices"), AnalystIntent::Hunt);
+        assert_eq!(classify_ask("detect breaches across files"), AnalystIntent::Chains);
     }
 
     fn fixture() -> (Connection, Vec<ColumnMeta>) {
