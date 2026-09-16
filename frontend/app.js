@@ -155,6 +155,10 @@
   const nextPageBtn = document.getElementById("next-page-btn");
   const pageSizeSelect = document.getElementById("page-size-select");
   const selectionCountBadge = document.getElementById("selection-count-badge");
+  const hiddenRowsBadge = document.getElementById("hidden-rows-badge");
+  const hiddenRowsLabel = document.getElementById("hidden-rows-label");
+  const hiddenColsBadge = document.getElementById("hidden-cols-badge");
+  const hiddenColsLabel = document.getElementById("hidden-cols-label");
 
   // -- state --------------------------------------------------------------
   const DEFAULT_PAGE_SIZE = 300;
@@ -170,6 +174,9 @@
   let currentPath = null;
   let currentSheet = null;
   let lockedColumnFields = new Set();
+  let hiddenRowNums = new Set();
+  let selectedColFields = new Set();
+  let hiddenColFields = new Set();
 
   // Multi-file tracking
   let loadedFiles = []; // array of { path, sheet, name, rowCount, columns, summary }
@@ -1193,19 +1200,21 @@
     const uniqueFiles = new Set(events.map((e) => e.fileName || (e.path ? e.path.split(/[\\/]/).pop() : "File")));
     const fileCount = uniqueFiles.size;
 
-    const tableData = events.map((ev, idx) => ({
-      id: idx + 1,
-      _unifiedIndex: idx + 1,
-      row_num: ev.rowNum,
-      fileName: ev.fileName || (ev.path ? ev.path.split(/[\\/]/).pop() : "File"),
-      path: ev.path,
-      epochMs: ev.epochMs,
-      utcText: ev.utcText || "—",
-      user: ev.user || "—",
-      host: ev.host || "—",
-      action: ev.action || "—",
-      mitreTags: Array.isArray(ev.mitreTags) ? ev.mitreTags : [],
-    }));
+    const tableData = events
+      .filter((ev) => !hiddenRowNums.has(ev.rowNum))
+      .map((ev, idx) => ({
+        id: idx + 1,
+        _unifiedIndex: idx + 1,
+        row_num: ev.rowNum,
+        fileName: ev.fileName || (ev.path ? ev.path.split(/[\\/]/).pop() : "File"),
+        path: ev.path,
+        epochMs: ev.epochMs,
+        utcText: ev.utcText || "—",
+        user: ev.user || "—",
+        host: ev.host || "—",
+        action: ev.action || "—",
+        mitreTags: Array.isArray(ev.mitreTags) ? ev.mitreTags : [],
+      }));
 
     const unifiedColumns = [
       {
@@ -1251,6 +1260,16 @@
         width: 190,
         minWidth: 140,
         headerSort: true,
+        visible: !hiddenColFields.has("fileName"),
+        headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+          }
+        },
         formatter(cell) {
           const val = cell.getValue() || "";
           return `<span class="unified-file-badge" title="${escapeHtml(cell.getRow().getData().path || val)}">📄 ${escapeHtml(val)}</span>`;
@@ -1262,6 +1281,16 @@
         width: 190,
         minWidth: 150,
         headerSort: true,
+        visible: !hiddenColFields.has("utcText"),
+        headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+          }
+        },
         sorter(a, b, aRow, bRow) {
           const ea = aRow.getData().epochMs || 0;
           const eb = bRow.getData().epochMs || 0;
@@ -1274,6 +1303,16 @@
         width: 180,
         minWidth: 130,
         headerSort: true,
+        visible: !hiddenColFields.has("user"),
+        headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+          }
+        },
         formatter(cell) {
           const val = cell.getValue();
           return val && val !== "—" ? `<span style="font-weight:600;">${escapeHtml(val)}</span>` : `<span style="color:var(--text-muted);">—</span>`;
@@ -1285,6 +1324,16 @@
         width: 160,
         minWidth: 120,
         headerSort: true,
+        visible: !hiddenColFields.has("host"),
+        headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+          }
+        },
         formatter(cell) {
           const val = cell.getValue();
           return val && val !== "—" ? `<code>${escapeHtml(val)}</code>` : `<span style="color:var(--text-muted);">—</span>`;
@@ -1295,6 +1344,16 @@
         field: "action",
         minWidth: 260,
         headerSort: true,
+        visible: !hiddenColFields.has("action"),
+        headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+          }
+        },
         formatter(cell) {
           const val = cell.getValue();
           return `<span>${escapeHtml(val || "—")}</span>`;
@@ -1305,6 +1364,16 @@
         field: "mitreTags",
         minWidth: 170,
         headerSort: false,
+        visible: !hiddenColFields.has("mitreTags"),
+        headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+          }
+        },
         formatter(cell) {
           const tags = cell.getValue();
           if (!Array.isArray(tags) || tags.length === 0) return "";
@@ -3050,7 +3119,11 @@
             })
           : await invoke("query_rows", { spec: request.spec });
       if (!requestIsCurrent() || !table) return null;
-      await request.table.replaceData(page.rows);
+      const rawRows = Array.isArray(page.rows) ? page.rows : [];
+      const visibleRows = hiddenRowNums.size > 0
+        ? rawRows.filter((r) => !hiddenRowNums.has(r.row_num))
+        : rawRows;
+      await request.table.replaceData(visibleRows);
       if (!requestIsCurrent() || !table) return null;
       nextCursor = page.nextCursor;
       hasMore = page.hasMore;
@@ -3178,6 +3251,8 @@
   }
 
   function clearAllTableFilters() {
+    unhideAllRows({ reload: false });
+    unhideAllColumns();
     if (isUnifiedCorrelatedMode) {
       exitUnifiedCorrelatedGrid();
       return;
@@ -4648,6 +4723,179 @@
     toggleColumnLock(field);
   }
 
+  function updateSelectionBadge() {
+    if (!selectionCountBadge) return;
+    const selRowsCount = (table && typeof table.getSelectedRows === "function")
+      ? (table.getSelectedRows()?.length || 0)
+      : 0;
+    const selColsCount = selectedColFields.size;
+
+    if (selRowsCount > 0 && selColsCount > 0) {
+      selectionCountBadge.textContent = `${selRowsCount.toLocaleString()} rows, ${selColsCount} cols selected (Del to hide, Esc to clear)`;
+      selectionCountBadge.classList.remove("hidden");
+    } else if (selRowsCount > 0) {
+      selectionCountBadge.textContent =
+        selRowsCount === 1
+          ? "1 row selected (Del to hide, Esc to clear)"
+          : `${selRowsCount.toLocaleString()} rows selected (Del to hide, Esc to clear)`;
+      selectionCountBadge.classList.remove("hidden");
+    } else if (selColsCount > 0) {
+      selectionCountBadge.textContent =
+        selColsCount === 1
+          ? "1 col selected (Del to hide, Esc to clear)"
+          : `${selColsCount} cols selected (Del to hide, Esc to clear)`;
+      selectionCountBadge.classList.remove("hidden");
+    } else {
+      selectionCountBadge.classList.add("hidden");
+    }
+  }
+
+  function updateHiddenIndicators() {
+    if (hiddenRowsBadge) {
+      if (hiddenRowNums.size > 0) {
+        if (hiddenRowsLabel) {
+          hiddenRowsLabel.textContent = `${hiddenRowNums.size.toLocaleString()} hidden`;
+        } else {
+          hiddenRowsBadge.textContent = `● ${hiddenRowNums.size.toLocaleString()} hidden`;
+        }
+        hiddenRowsBadge.title = `${hiddenRowNums.size.toLocaleString()} row(s) hidden from view (Click or press Esc to restore)`;
+        hiddenRowsBadge.classList.remove("hidden");
+      } else {
+        hiddenRowsBadge.classList.add("hidden");
+      }
+    }
+    if (hiddenColsBadge) {
+      if (hiddenColFields.size > 0) {
+        const colNames = Array.from(hiddenColFields).map((f) => {
+          const c = Array.isArray(columns) ? columns.find((col) => col.sqlName === f) : null;
+          return c ? c.originalName : f;
+        });
+        const labelText = `${hiddenColFields.size} col${hiddenColFields.size === 1 ? "" : "s"} hidden`;
+        if (hiddenColsLabel) {
+          hiddenColsLabel.textContent = labelText;
+        } else {
+          hiddenColsBadge.textContent = `● ${labelText}`;
+        }
+        hiddenColsBadge.title = `Hidden: ${colNames.join(", ")} (Click to restore)`;
+        hiddenColsBadge.classList.remove("hidden");
+      } else {
+        hiddenColsBadge.classList.add("hidden");
+      }
+    }
+  }
+
+  function hideSelectedRows() {
+    if (!table || typeof table.getSelectedRows !== "function") return;
+    const selRows = table.getSelectedRows();
+    if (!selRows || selRows.length === 0) return;
+    selRows.forEach((r) => {
+      const data = typeof r.getData === "function" ? r.getData() : null;
+      if (data && data.row_num !== undefined) {
+        hiddenRowNums.add(data.row_num);
+      }
+      if (typeof r.delete === "function") {
+        try {
+          r.delete();
+        } catch (_) {}
+      }
+    });
+    if (typeof table.deselectRows === "function") {
+      table.deselectRows();
+    }
+    updateSelectionBadge();
+    updateHiddenIndicators();
+    updateRowCountLabel();
+  }
+
+  function unhideAllRows(options = { reload: true }) {
+    if (hiddenRowNums.size === 0) return;
+    hiddenRowNums.clear();
+    updateHiddenIndicators();
+    if (options && options.reload) {
+      if (isUnifiedCorrelatedMode && savedUnifiedContext) {
+        const { events, label, jumpedIndex } = savedUnifiedContext;
+        renderUnifiedCorrelatedGrid(events, label, jumpedIndex);
+      } else {
+        refreshData();
+      }
+    }
+  }
+
+  function toggleColumnSelection(field) {
+    if (!field || field === "row_num" || field === "_unifiedIndex") return;
+    if (selectedColFields.has(field)) {
+      selectedColFields.delete(field);
+    } else {
+      selectedColFields.add(field);
+    }
+    updateColumnHeaderSelectionStyles();
+    updateSelectionBadge();
+  }
+
+  function hideColumn(field) {
+    if (!field || field === "row_num" || field === "_unifiedIndex" || !table) return;
+    hiddenColFields.add(field);
+    selectedColFields.delete(field);
+    try {
+      if (typeof table.hideColumn === "function") {
+        table.hideColumn(field);
+      }
+    } catch (_) {}
+    updateColumnHeaderSelectionStyles();
+    updateSelectionBadge();
+    updateHiddenIndicators();
+  }
+
+  function hideSelectedColumns() {
+    if (selectedColFields.size === 0 || !table) return;
+    selectedColFields.forEach((field) => {
+      if (field && field !== "row_num" && field !== "_unifiedIndex") {
+        hiddenColFields.add(field);
+        try {
+          if (typeof table.hideColumn === "function") {
+            table.hideColumn(field);
+          }
+        } catch (_) {}
+      }
+    });
+    selectedColFields.clear();
+    updateColumnHeaderSelectionStyles();
+    updateSelectionBadge();
+    updateHiddenIndicators();
+  }
+
+  function unhideAllColumns() {
+    if (!table) return;
+    hiddenColFields.forEach((field) => {
+      try {
+        if (typeof table.showColumn === "function") {
+          table.showColumn(field);
+        }
+      } catch (_) {}
+    });
+    hiddenColFields.clear();
+    selectedColFields.clear();
+    updateColumnHeaderSelectionStyles();
+    updateSelectionBadge();
+    updateHiddenIndicators();
+  }
+
+  function updateColumnHeaderSelectionStyles() {
+    if (typeof document === "undefined") return;
+    if (table && typeof table.getColumns === "function") {
+      table.getColumns().forEach((col) => {
+        const el = typeof col.getElement === "function" ? col.getElement() : null;
+        if (!el) return;
+        const field = typeof col.getField === "function" ? col.getField() : null;
+        if (field && selectedColFields.has(field)) {
+          el.classList.add("col-header-selected");
+        } else {
+          el.classList.remove("col-header-selected");
+        }
+      });
+    }
+  }
+
   function buildTabulatorColumns() {
     const isWideGrid = columns.length > WIDE_GRID_COLUMN_THRESHOLD;
 
@@ -4670,9 +4918,10 @@
         resizable: true,
         frozen: isFrozen,
         minWidth: isFrozen ? 140 : 80,
+        visible: !hiddenColFields.has(c.sqlName),
         headerTooltip: isFrozen
-          ? "Pinned column · Click to sort · Double-click to unpin"
-          : "Click to sort · Double-click to pin column to left",
+          ? "Pinned column · Ctrl+Click to select · Alt+Click to hide · Double-click to unpin"
+          : "Click to sort · Ctrl+Click to select · Alt+Click to hide · Double-click to pin",
         ...(isWideGrid ? { width: 160 } : {}),
         titleFormatter() {
           const wrapper = document.createElement("span");
@@ -4700,6 +4949,14 @@
           return wrapper;
         },
         headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+            return;
+          }
           handleColumnHeaderClick(col.getField());
         },
         headerDblClick(e, col) {
@@ -4804,6 +5061,10 @@
     fileInfo.title = importedPath;
 
     // reset controls
+    hiddenRowNums.clear();
+    selectedColFields.clear();
+    hiddenColFields.clear();
+    updateHiddenIndicators();
     resetIntelUiState();
     searchBox.value = "";
     filterList.innerHTML = "";
@@ -4845,17 +5106,11 @@
     });
 
     if (typeof table.on === "function") {
-      table.on("rowSelectionChanged", (_data, rows) => {
-        const count = Array.isArray(rows) ? rows.length : 0;
-        if (selectionCountBadge) {
-          if (count > 0) {
-            selectionCountBadge.textContent =
-              count === 1 ? "1 row selected (Esc to clear)" : `${count.toLocaleString()} rows selected (Esc to clear)`;
-            selectionCountBadge.classList.remove("hidden");
-          } else {
-            selectionCountBadge.classList.add("hidden");
-          }
-        }
+      table.on("rowSelectionChanged", () => {
+        updateSelectionBadge();
+      });
+      table.on("renderComplete", () => {
+        updateColumnHeaderSelectionStyles();
       });
     }
 
@@ -6509,7 +6764,28 @@
 
   if (keydownTarget) {
     keydownTarget.addEventListener("keydown", (e) => {
+      const activeEl = typeof document !== "undefined" ? document.activeElement : null;
+      const isInput = activeEl && (
+        activeEl.tagName === "INPUT" ||
+        activeEl.tagName === "TEXTAREA" ||
+        activeEl.isContentEditable
+      );
+
       if (e.key === "Escape") {
+        if (selectedColFields.size > 0) {
+          selectedColFields.clear();
+          updateColumnHeaderSelectionStyles();
+          updateSelectionBadge();
+          return;
+        }
+        if (table && typeof table.getSelectedRows === "function") {
+          const selRows = table.getSelectedRows();
+          if (selRows && selRows.length > 0) {
+            table.deselectRows();
+            updateSelectionBadge();
+            return;
+          }
+        }
         if (unifiedDetailDrawer && !unifiedDetailDrawer.classList.contains("hidden")) {
           closeUnifiedRowDetailDrawer();
           return;
@@ -6523,6 +6799,25 @@
         if (!isUnifiedCorrelatedMode && savedUnifiedContext && savedUnifiedContext.events?.length > 0) {
           e.preventDefault();
           returnToUnifiedCorrelatedGrid();
+          return;
+        }
+      }
+
+      if (!isInput && (e.key === "Delete" || e.key === "Backspace")) {
+        let acted = false;
+        if (selectedColFields.size > 0) {
+          hideSelectedColumns();
+          acted = true;
+        }
+        if (table && typeof table.getSelectedRows === "function") {
+          const selRows = table.getSelectedRows();
+          if (selRows && selRows.length > 0) {
+            hideSelectedRows();
+            acted = true;
+          }
+        }
+        if (acted) {
+          e.preventDefault();
         }
       }
     });
@@ -6531,6 +6826,33 @@
     selectionCountBadge.addEventListener("click", () => {
       if (table && typeof table.deselectRows === "function") {
         table.deselectRows();
+      }
+      if (selectedColFields.size > 0) {
+        selectedColFields.clear();
+        updateColumnHeaderSelectionStyles();
+      }
+      updateSelectionBadge();
+    });
+  }
+  if (hiddenRowsBadge) {
+    hiddenRowsBadge.addEventListener("click", () => {
+      unhideAllRows();
+    });
+    hiddenRowsBadge.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        unhideAllRows();
+      }
+    });
+  }
+  if (hiddenColsBadge) {
+    hiddenColsBadge.addEventListener("click", () => {
+      unhideAllColumns();
+    });
+    hiddenColsBadge.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
+        e.preventDefault();
+        unhideAllColumns();
       }
     });
   }
@@ -6896,6 +7218,30 @@
     },
     closeUnifiedRowDetailDrawerForTest() {
       return closeUnifiedRowDetailDrawer();
+    },
+    hideSelectedRowsForTest() {
+      return hideSelectedRows();
+    },
+    unhideAllRowsForTest() {
+      return unhideAllRows();
+    },
+    getHiddenRowNumsForTest() {
+      return Array.from(hiddenRowNums);
+    },
+    hideColumnForTest(field) {
+      return hideColumn(field);
+    },
+    unhideAllColumnsForTest() {
+      return unhideAllColumns();
+    },
+    getHiddenColFieldsForTest() {
+      return Array.from(hiddenColFields);
+    },
+    toggleColumnSelectionForTest(field) {
+      return toggleColumnSelection(field);
+    },
+    getSelectedColFieldsForTest() {
+      return Array.from(selectedColFields);
     },
   });
 })();

@@ -124,7 +124,9 @@
             <footer id="status-bar">
               <div class="status-left">
                 <span id="row-count-label">&mdash;</span>
-                <span id="selection-count-badge" class="selection-badge hidden" title="Selected rows (Click or press Esc to deselect)"></span>
+                <span id="selection-count-badge" class="selection-badge hidden" title="Selected rows/columns (Press Del to hide, click or Esc to deselect)"></span>
+                <span id="hidden-rows-badge" class="hidden-dot-badge hidden" role="button" tabindex="0" title="Click or press Esc to restore hidden rows"><span class="dot-icon">●</span> <span id="hidden-rows-label">0 hidden</span></span>
+                <span id="hidden-cols-badge" class="hidden-dot-badge hidden" role="button" tabindex="0" title="Click to restore hidden columns"><span class="dot-icon">●</span> <span id="hidden-cols-label">0 cols hidden</span></span>
               </div>
               <div class="status-right">
                 <label for="page-size-select" class="page-size-label">Per page:</label>

@@ -653,20 +653,34 @@ fn score_file_name(header: &HeaderProfile, values: &[String]) -> (f64, Vec<Strin
 fn score_host(header: &HeaderProfile, values: &[String]) -> (f64, Vec<String>) {
     let mut score = 0.0;
     let mut reasons = Vec::new();
-    if !header.compact.contains("hosted") && !header.compact.contains("ghost") {
-        if let Some(keyword) = header.contains_any(&[
-            "hostname",
-            "computer",
-            "devicename",
-            "device",
-            "workstation",
-            "machine",
-            "host",
-            "dvc",
-        ]) {
-            score += 0.42;
-            reasons.push(format!("header contains host keyword '{keyword}'"));
-        }
+    if header.compact.contains("devicetype")
+        || header.compact.contains("devicemodel")
+        || header.compact.contains("devicecategory")
+        || header.compact.contains("deviceos")
+        || header.compact.contains("devicevendor")
+        || header.compact.contains("devicestatus")
+        || header.compact.contains("deviceaction")
+        || header.compact.contains("platform")
+        || header.compact.contains("hosted")
+        || header.compact.contains("ghost")
+    {
+        return (0.0, reasons);
+    }
+
+    if let Some(keyword) = header.contains_any(&[
+        "hostname",
+        "computername",
+        "computer",
+        "devicename",
+        "deviceid",
+        "workstation",
+        "machinename",
+        "machine",
+        "host",
+        "dvc",
+    ]) {
+        score += 0.42;
+        reasons.push(format!("header contains host keyword '{keyword}'"));
     }
 
     let total = values.len();
@@ -1182,6 +1196,13 @@ fn is_host_like(value: &str) -> bool {
         || looks_like_path(trimmed)
         || parse_ip(trimmed).is_some()
     {
+        return false;
+    }
+    let lower = trimmed.to_ascii_lowercase();
+    if matches!(
+        lower.as_str(),
+        "pc" | "mac" | "ios" | "android" | "other" | "unknown" | "none" | "null" | "n/a" | "na" | "true" | "false" | "windows" | "linux"
+    ) {
         return false;
     }
     trimmed.chars().any(|c| c.is_ascii_alphabetic())

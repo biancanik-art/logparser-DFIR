@@ -2793,6 +2793,57 @@ select { font: inherit; }
   to { transform: translateX(0); }
 }
 
+.hidden-dot-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  border-radius: 10px;
+  background: #fee2e2;
+  color: #991b1b;
+  border: 1px solid #f87171;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: all 0.15s ease;
+}
+
+.hidden-dot-badge:hover {
+  background: #fecaca;
+  color: #7f1d1d;
+  border-color: #ef4444;
+}
+
+.hidden-dot-badge .dot-icon {
+  font-size: 8px;
+  color: #ef4444;
+  vertical-align: middle;
+}
+
+@media (prefers-color-scheme: dark) {
+  .hidden-dot-badge {
+    background: #450a0a;
+    color: #fecaca;
+    border-color: #b91c1c;
+  }
+  .hidden-dot-badge:hover {
+    background: #5c1111;
+    color: #ffffff;
+    border-color: #ef4444;
+  }
+  .hidden-dot-badge .dot-icon {
+    color: #f87171;
+  }
+}
+
+.col-header-selected {
+  background: rgba(59, 130, 246, 0.22) !important;
+  outline: 2px solid #3b82f6 !important;
+  outline-offset: -2px;
+}
+
 .unified-drawer-backdrop {
   position: fixed;
   inset: 0;

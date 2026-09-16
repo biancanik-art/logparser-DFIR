@@ -2676,7 +2676,7 @@ where
         };
 
         if !analyst::row_time_available(&conn).unwrap_or(false) {
-            let _ = time::normalize_timestamp_column_with_options(&mut conn, &columns, None, None);
+            let _ = time::normalize_timestamp_column_with_options(&mut conn, &columns, Some("UTC"), Some("month_first"));
         }
 
         let active_columns = guided_query::active_evidence_columns(&conn).unwrap_or_default();

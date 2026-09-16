@@ -200,6 +200,9 @@ pub fn analyze_timestamp_column(
         },
     )?;
 
+    let has_utc_in_name = column.sql_name.to_lowercase().contains("utc")
+        || column.original_name.to_lowercase().contains("utc");
+
     Ok(TimestampAnalysis {
         timestamp_column: column.sql_name.clone(),
         original_name: column.original_name.clone(),
@@ -209,7 +212,7 @@ pub fn analyze_timestamp_column(
         naive_count: counts.naive_count,
         blank_count: counts.blank_count,
         invalid_count: counts.invalid_count,
-        needs_timezone: counts.naive_count > 0,
+        needs_timezone: counts.naive_count > 0 && !has_utc_in_name,
         needs_date_convention: date_analysis.conflicting
             || (!date_analysis.ambiguous_samples.is_empty() && date_analysis.inferred.is_none()),
         inferred_date_convention: date_analysis
@@ -315,11 +318,17 @@ fn normalize_timestamp_column_with_progress_and_guard(
             date_analysis.ambiguous_samples[0]
         );
     }
-    let resolver = naive_timezone
+    let mut resolver = naive_timezone
         .map(str::trim)
         .filter(|value| !value.is_empty())
         .map(TimezoneResolver::from_answer)
         .transpose()?;
+    if resolver.is_none()
+        && (column.sql_name.to_lowercase().contains("utc")
+            || column.original_name.to_lowercase().contains("utc"))
+    {
+        resolver = Some(TimezoneResolver::from_answer("UTC")?);
+    }
 
     // Validate every conversion before creating staging state. The source scan is paginated, so
     // it never keeps a read statement open while a semantic/audit writer is trying to commit.
@@ -859,6 +868,7 @@ fn resolved_timestamp_column(conn: &Connection, columns: &[ColumnMeta]) -> Resul
         )
         .optional()?;
 
+    let has_recorded = recorded.is_some();
     if let Some((sql_name, status, confidence)) = recorded {
         if status == "confirmed" || confidence >= AUTOMATIC_CONFIDENCE {
             return columns
@@ -875,6 +885,33 @@ fn resolved_timestamp_column(conn: &Connection, columns: &[ColumnMeta]) -> Resul
     let only = inferred.next().cloned();
     if only.is_some() && inferred.next().is_none() {
         return Ok(only.expect("one inferred timestamp"));
+    }
+
+    if !has_recorded {
+        const CANONICAL_TIMESTAMPS: &[&str] = &[
+            "timegenerated",
+            "timestamp",
+            "date_time_utc_24hr",
+            "createddatetime",
+            "creationdate",
+            "creationtime",
+            "eventtime",
+            "activitydatetime",
+            "datetime",
+            "date_time",
+            "event_timestamp",
+            "time",
+            "date",
+        ];
+        for canonical in CANONICAL_TIMESTAMPS {
+            if let Some(col) = columns.iter().find(|c| {
+                let l = c.sql_name.to_lowercase();
+                let orig = c.original_name.to_lowercase().replace([' ', '/', '(', ')', '_', '-'], "");
+                l == *canonical || orig == canonical.replace('_', "")
+            }) {
+                return Ok(col.clone());
+            }
+        }
     }
 
     bail!(
@@ -989,6 +1026,12 @@ fn parse_explicit_offset(value: &str) -> Option<DateTime<Utc>> {
         "%Y-%m-%d %H:%M:%S%.f %z",
         "%Y-%m-%d %H:%M:%S%.f%z",
         "%Y-%m-%dT%H:%M:%S%.f%z",
+        "%Y-%m-%d %I:%M:%S %p %:z",
+        "%Y-%m-%d %I:%M:%S %p %z",
+        "%m/%d/%Y %I:%M:%S %p %:z",
+        "%m/%d/%Y %I:%M:%S %p %z",
+        "%d/%m/%Y %I:%M:%S %p %:z",
+        "%d/%m/%Y %I:%M:%S %p %z",
     ];
     FORMATS.iter().find_map(|format| {
         DateTime::parse_from_str(value, format)
@@ -1002,9 +1045,19 @@ fn parse_naive(value: &str, date_convention: Option<DateConvention>) -> Option<N
         "%Y-%m-%dT%H:%M:%S%.f",
         "%Y-%m-%d %H:%M:%S%.f",
         "%Y/%m/%d %H:%M:%S%.f",
+        "%Y-%m-%dT%H:%M:%S",
+        "%Y-%m-%d %H:%M:%S",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y-%m-%d %I:%M:%S %p",
+        "%-Y-%-m-%-d %-I:%M:%S %p",
+        "%Y-%m-%d %I:%M:%S%.f %p",
+        "%Y/%m/%d %I:%M:%S %p",
+        "%Y/%m/%d %I:%M:%S%.f %p",
         "%Y-%m-%dT%H:%M",
         "%Y-%m-%d %H:%M",
         "%Y/%m/%d %H:%M",
+        "%Y-%m-%d %I:%M %p",
+        "%Y/%m/%d %I:%M %p",
     ];
     if let Some(parsed) = DATETIME_FORMATS
         .iter()
@@ -1028,8 +1081,44 @@ fn parse_naive(value: &str, date_convention: Option<DateConvention>) -> Option<N
         Some(SlashDateEvidence::Ambiguous) | None => None,
     })?;
     let (datetime_formats, date_format): (&[&str], &str) = match convention {
-        DateConvention::MonthFirst => (&["%m/%d/%Y %H:%M:%S%.f", "%m/%d/%Y %H:%M"], "%m/%d/%Y"),
-        DateConvention::DayFirst => (&["%d/%m/%Y %H:%M:%S%.f", "%d/%m/%Y %H:%M"], "%d/%m/%Y"),
+        DateConvention::MonthFirst => (
+            &[
+                "%m/%d/%Y %I:%M:%S %p",
+                "%-m/%-d/%Y %-I:%M:%S %p",
+                "%m/%d/%Y %I:%M:%S%.f %p",
+                "%-m/%-d/%Y %-I:%M:%S%.f %p",
+                "%m/%d/%Y %I:%M %p",
+                "%-m/%-d/%Y %-I:%M %p",
+                "%m/%d/%Y %r",
+                "%-m/%-d/%Y %r",
+                "%m/%d/%Y %H:%M:%S%.f",
+                "%-m/%-d/%Y %H:%M:%S%.f",
+                "%m/%d/%Y %H:%M:%S",
+                "%-m/%-d/%Y %H:%M:%S",
+                "%m/%d/%Y %H:%M",
+                "%-m/%-d/%Y %H:%M",
+            ],
+            "%m/%d/%Y",
+        ),
+        DateConvention::DayFirst => (
+            &[
+                "%d/%m/%Y %I:%M:%S %p",
+                "%-d/%-m/%Y %-I:%M:%S %p",
+                "%d/%m/%Y %I:%M:%S%.f %p",
+                "%-d/%-m/%Y %-I:%M:%S%.f %p",
+                "%d/%m/%Y %I:%M %p",
+                "%-d/%-m/%Y %-I:%M %p",
+                "%d/%m/%Y %r",
+                "%-d/%-m/%Y %r",
+                "%d/%m/%Y %H:%M:%S%.f",
+                "%-d/%-m/%Y %H:%M:%S%.f",
+                "%d/%m/%Y %H:%M:%S",
+                "%-d/%-m/%Y %H:%M:%S",
+                "%d/%m/%Y %H:%M",
+                "%-d/%-m/%Y %H:%M",
+            ],
+            "%d/%m/%Y",
+        ),
     };
     datetime_formats
         .iter()
@@ -1039,6 +1128,51 @@ fn parse_naive(value: &str, date_convention: Option<DateConvention>) -> Option<N
                 .ok()
                 .and_then(|date| date.and_hms_opt(0, 0, 0))
         })
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%-m/%-d/%Y")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+        })
+        .or_else(|| {
+            NaiveDate::parse_from_str(value, "%-d/%-m/%Y")
+                .ok()
+                .and_then(|date| date.and_hms_opt(0, 0, 0))
+        })
+}
+
+/// Robustly parse a timestamp string for unified display and correlation, defaulting to UTC if naive.
+pub fn parse_flexible_timestamp(value: &str, default_to_utc: bool) -> (Option<i64>, Option<String>) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return (None, None);
+    }
+    match parse_timestamp(trimmed, Some(DateConvention::MonthFirst)) {
+        ParsedTimestamp::Absolute { utc, .. } => {
+            (
+                Some(utc.timestamp_millis()),
+                Some(utc.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
+            )
+        }
+        ParsedTimestamp::Naive(naive) if default_to_utc => {
+            let utc = DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc);
+            (
+                Some(utc.timestamp_millis()),
+                Some(utc.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
+            )
+        }
+        ParsedTimestamp::AmbiguousDate if default_to_utc => {
+            if let Some(naive) = parse_naive(trimmed, Some(DateConvention::MonthFirst)) {
+                let utc = DateTime::<Utc>::from_naive_utc_and_offset(naive, Utc);
+                (
+                    Some(utc.timestamp_millis()),
+                    Some(utc.to_rfc3339_opts(SecondsFormat::AutoSi, true)),
+                )
+            } else {
+                (None, Some(trimmed.to_string()))
+            }
+        }
+        _ => (None, Some(trimmed.to_string())),
+    }
 }
 
 fn parse_fixed_offset(value: &str) -> Option<FixedOffset> {

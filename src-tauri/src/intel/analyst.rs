@@ -346,7 +346,7 @@ pub fn ask(
                     ),
                 });
             } else {
-                match time::normalize_timestamp_column_with_options(conn, columns, None, None) {
+                match time::normalize_timestamp_column_with_options(conn, columns, Some("UTC"), Some("month_first")) {
                     Ok(summary) => steps.push(AnalystStep {
                         step: "timeline".to_string(),
                         status: "ran".to_string(),
@@ -1809,6 +1809,204 @@ fn find_matching_timeline_rows(
     Ok(row_set.into_iter().collect())
 }
 
+#[derive(Debug, Clone, Default)]
+pub struct ResolvedTimelineColumns {
+    pub user_col: Option<String>,
+    pub host_col: Option<String>,
+    pub ip_col: Option<String>,
+    pub action_col: Option<String>,
+    pub raw_time_col: Option<String>,
+}
+
+pub fn is_device_category_or_type_col(name: &str) -> bool {
+    let l = name.to_ascii_lowercase().replace(['_', '-', ' '], "");
+    l.contains("devicetype")
+        || l.contains("devicemodel")
+        || l.contains("devicecategory")
+        || l.contains("deviceos")
+        || l.contains("devicevendor")
+        || l.contains("devicestatus")
+        || l.contains("deviceaction")
+        || l.contains("platform")
+        || l.contains("hosted")
+        || l.contains("ghost")
+        || l.contains("browser")
+        || l.contains("useragent")
+}
+
+pub fn format_combined_host_ip(host_val: Option<&str>, ip_val: Option<&str>) -> Option<String> {
+    let is_generic_device = |v: &str| {
+        let l = v.trim().to_ascii_lowercase();
+        matches!(
+            l.as_str(),
+            "" | "pc" | "mac" | "other" | "unknown" | "none" | "null" | "n/a" | "na" | "true" | "false" | "windows" | "linux" | "ios" | "android"
+        )
+    };
+    let h = host_val.map(str::trim).filter(|s| !is_generic_device(s));
+    let ip = ip_val.map(str::trim).filter(|s| !s.is_empty() && !is_generic_device(s));
+
+    match (h, ip) {
+        (Some(host), Some(ip_addr)) if host.eq_ignore_ascii_case(ip_addr) => Some(ip_addr.to_string()),
+        (Some(host), Some(ip_addr)) => {
+            if (host.len() == 36 || host.len() == 32) && host.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+                Some(format!("{ip_addr} [{host}]"))
+            } else {
+                Some(format!("{host} ({ip_addr})"))
+            }
+        }
+        (None, Some(ip_addr)) => Some(ip_addr.to_string()),
+        (Some(host), None) => Some(host.to_string()),
+        (None, None) => None,
+    }
+}
+
+pub fn resolve_timeline_columns(
+    columns: &[db::ColumnMeta],
+    role_map: &HashMap<String, String>,
+) -> ResolvedTimelineColumns {
+    let user_col = role_map.get("user").cloned().or_else(|| {
+        columns
+            .iter()
+            .find(|c| {
+                let l = c.original_name.to_lowercase();
+                (l.contains("user") || l.contains("account") || l.contains("username") || l.contains("upn") || l.contains("actor"))
+                    && !l.contains("hosted")
+                    && !l.contains("useragent")
+                    && !l.contains("user_agent")
+            })
+            .map(|c| c.sql_name.clone())
+    });
+
+    let ip_col = role_map.get("ip").cloned().or_else(|| {
+        columns
+            .iter()
+            .find(|c| {
+                if c.inferred_type == "ip" {
+                    return true;
+                }
+                let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+                l.contains("clientip")
+                    || l.contains("sourceip")
+                    || l.contains("ipaddress")
+                    || l.contains("remoteip")
+                    || l.contains("actorip")
+                    || l.contains("srcip")
+                    || l.contains("dstip")
+                    || l == "ip"
+            })
+            .map(|c| c.sql_name.clone())
+    });
+
+    let host_col = role_map
+        .get("host")
+        .cloned()
+        .filter(|c| !is_device_category_or_type_col(c))
+        .or_else(|| {
+            columns
+                .iter()
+                .find(|c| {
+                    let l = c.original_name.to_lowercase();
+                    if is_device_category_or_type_col(&l) {
+                        return false;
+                    }
+                    (l.contains("computername")
+                        || l.contains("workstation")
+                        || l.contains("machinename")
+                        || l.contains("hostname")
+                        || l.contains("deviceid")
+                        || l.contains("device_id")
+                        || l.contains("devicename")
+                        || l.contains("computer")
+                        || l.contains("machine")
+                        || l.contains("host")
+                        || l.contains("dvc"))
+                        && Some(&c.sql_name) != ip_col.as_ref()
+                        && Some(&c.sql_name) != user_col.as_ref()
+                })
+                .map(|c| c.sql_name.clone())
+        });
+
+    let action_col = role_map
+        .get("commandline")
+        .cloned()
+        .or_else(|| role_map.get("process_name").cloned())
+        .or_else(|| role_map.get("operation").cloned())
+        .or_else(|| {
+            columns
+                .iter()
+                .find(|c| {
+                    let l = c.original_name.to_lowercase();
+                    (l.contains("operation")
+                        || l.contains("activity")
+                        || l.contains("command")
+                        || l.contains("process")
+                        || l.contains("action")
+                        || l.contains("event_name")
+                        || l.contains("eventname")
+                        || l.contains("workload")
+                        || l.contains("event")
+                        || l.contains("message")
+                        || l.contains("detail"))
+                        && Some(&c.sql_name) != user_col.as_ref()
+                        && Some(&c.sql_name) != host_col.as_ref()
+                        && Some(&c.sql_name) != ip_col.as_ref()
+                        && !l.contains("hosted")
+                })
+                .map(|c| c.sql_name.clone())
+        })
+        .or_else(|| {
+            columns
+                .iter()
+                .find(|c| {
+                    c.inferred_type == "text"
+                        && Some(&c.sql_name) != user_col.as_ref()
+                        && Some(&c.sql_name) != host_col.as_ref()
+                        && Some(&c.sql_name) != ip_col.as_ref()
+                        && !c.original_name.to_lowercase().contains("hosted")
+                })
+                .map(|c| c.sql_name.clone())
+        });
+
+    let raw_time_col = role_map.get("timestamp").cloned().or_else(|| {
+        const CANONICAL_TIMESTAMPS: &[&str] = &[
+            "timegenerated",
+            "timestamp",
+            "date_time_utc_24hr",
+            "createddatetime",
+            "creationdate",
+            "creationtime",
+            "eventtime",
+            "activitydatetime",
+            "datetime",
+            "date_time",
+            "event_timestamp",
+            "time",
+            "date",
+        ];
+        for canonical in CANONICAL_TIMESTAMPS {
+            if let Some(col) = columns.iter().find(|c| {
+                let l = c.sql_name.to_lowercase();
+                let orig = c.original_name.to_lowercase().replace([' ', '/', '(', ')', '_', '-'], "");
+                l == *canonical || orig == canonical.replace('_', "")
+            }) {
+                return Some(col.sql_name.clone());
+            }
+        }
+        columns
+            .iter()
+            .find(|c| c.inferred_type == "timestamp" || c.original_name.to_lowercase().contains("time") || c.original_name.to_lowercase().contains("date"))
+            .map(|c| c.sql_name.clone())
+    });
+
+    ResolvedTimelineColumns {
+        user_col,
+        host_col,
+        ip_col,
+        action_col,
+        raw_time_col,
+    }
+}
+
 fn timeline_section(
     conn: &Connection,
     columns: &[ColumnMeta],
@@ -1837,71 +2035,7 @@ fn timeline_section(
     let has_time = row_time_available(conn)?;
     let roles = load_active_roles(conn)?;
     let role_map: HashMap<String, String> = roles.into_iter().collect();
-
-    let user_col = role_map.get("user").cloned().or_else(|| {
-        columns
-            .iter()
-            .find(|c| {
-                let l = c.original_name.to_lowercase();
-                (l.contains("user") || l.contains("account") || l.contains("username") || l.contains("upn") || l.contains("actor"))
-                    && !l.contains("hosted")
-            })
-            .map(|c| c.sql_name.clone())
-    });
-
-    let host_col = role_map.get("host").cloned().filter(|c| !c.to_lowercase().contains("hosted")).or_else(|| {
-        columns
-            .iter()
-            .find(|c| {
-                let l = c.original_name.to_lowercase();
-                (l.contains("host")
-                    || l.contains("computer")
-                    || l.contains("workstation")
-                    || l.contains("device")
-                    || l.contains("machine"))
-                    && !l.contains("hosted")
-                    && !l.contains("ghost")
-            })
-            .map(|c| c.sql_name.clone())
-    });
-
-    let action_col = role_map
-        .get("commandline")
-        .cloned()
-        .or_else(|| role_map.get("process_name").cloned())
-        .or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    let l = c.original_name.to_lowercase();
-                    (l.contains("operation")
-                        || l.contains("activity")
-                        || l.contains("command")
-                        || l.contains("process")
-                        || l.contains("action")
-                        || l.contains("event_name")
-                        || l.contains("eventname")
-                        || l.contains("workload")
-                        || l.contains("event")
-                        || l.contains("message")
-                        || l.contains("detail"))
-                        && Some(&c.sql_name) != user_col.as_ref()
-                        && Some(&c.sql_name) != host_col.as_ref()
-                        && !l.contains("hosted")
-                })
-                .map(|c| c.sql_name.clone())
-        })
-        .or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    c.inferred_type == "text"
-                        && Some(&c.sql_name) != user_col.as_ref()
-                        && Some(&c.sql_name) != host_col.as_ref()
-                        && !c.original_name.to_lowercase().contains("hosted")
-                })
-                .map(|c| c.sql_name.clone())
-        });
+    let resolved = resolve_timeline_columns(columns, &role_map);
 
     conn.execute(
         "CREATE TEMP TABLE IF NOT EXISTS _timeline_temp (row_num INTEGER PRIMARY KEY)",
@@ -1916,22 +2050,35 @@ fn timeline_section(
         }
     }
 
-    let user_sql = user_col
+    let raw_time_sql = resolved
+        .raw_time_col
         .as_ref()
         .map(|c| format!(", r.{}", db::quote_ident(c)))
         .unwrap_or_default();
-    let host_sql = host_col
+    let user_sql = resolved
+        .user_col
         .as_ref()
         .map(|c| format!(", r.{}", db::quote_ident(c)))
         .unwrap_or_default();
-    let action_sql = action_col
+    let host_sql = resolved
+        .host_col
+        .as_ref()
+        .map(|c| format!(", r.{}", db::quote_ident(c)))
+        .unwrap_or_default();
+    let ip_sql = resolved
+        .ip_col
+        .as_ref()
+        .map(|c| format!(", r.{}", db::quote_ident(c)))
+        .unwrap_or_default();
+    let action_sql = resolved
+        .action_col
         .as_ref()
         .map(|c| format!(", r.{}", db::quote_ident(c)))
         .unwrap_or_default();
 
     let query = if has_time {
         format!(
-            "SELECT r.row_num, rt.epoch_ms, rt.utc_text {user_sql} {host_sql} {action_sql}
+            "SELECT r.row_num, rt.epoch_ms, rt.utc_text {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
              FROM _timeline_temp t
              JOIN rows r ON r.row_num = t.row_num
              LEFT JOIN _row_time rt ON rt.row_num = r.row_num
@@ -1939,7 +2086,7 @@ fn timeline_section(
         )
     } else {
         format!(
-            "SELECT r.row_num, NULL, NULL {user_sql} {host_sql} {action_sql}
+            "SELECT r.row_num, NULL, NULL {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
              FROM _timeline_temp t
              JOIN rows r ON r.row_num = t.row_num
              ORDER BY r.row_num ASC"
@@ -1981,43 +2128,84 @@ fn timeline_section(
 
     let mut stmt = conn.prepare(&query)?;
     let mut col_offset = 3;
-    let user_idx = if user_col.is_some() {
+    let raw_time_idx = if resolved.raw_time_col.is_some() {
         let idx = col_offset;
         col_offset += 1;
         Some(idx)
     } else {
         None
     };
-    let host_idx = if host_col.is_some() {
+    let user_idx = if resolved.user_col.is_some() {
         let idx = col_offset;
         col_offset += 1;
         Some(idx)
     } else {
         None
     };
-    let action_idx = if action_col.is_some() {
+    let host_idx = if resolved.host_col.is_some() {
+        let idx = col_offset;
+        col_offset += 1;
+        Some(idx)
+    } else {
+        None
+    };
+    let ip_idx = if resolved.ip_col.is_some() {
+        let idx = col_offset;
+        col_offset += 1;
+        Some(idx)
+    } else {
+        None
+    };
+    let action_idx = if resolved.action_col.is_some() {
         let idx = col_offset;
         Some(idx)
     } else {
         None
     };
 
-    let timeline_rows: Vec<TimelineRowData> = stmt
+    let mut timeline_rows: Vec<TimelineRowData> = stmt
         .query_map([], |r| {
+            let epoch_ms: Option<i64> = r.get(1)?;
+            let utc_text: Option<String> = r.get(2)?;
+            let raw_time = raw_time_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
             let user = user_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-            let host = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+            let host_raw = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+            let ip_raw = ip_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
             let action =
                 action_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+
+            let mut final_epoch = epoch_ms;
+            let mut final_utc = utc_text;
+            if final_epoch.is_none() && raw_time.is_some() {
+                let (fe, fu) = time::parse_flexible_timestamp(raw_time.as_ref().unwrap(), true);
+                if fe.is_some() {
+                    final_epoch = fe;
+                }
+                if fu.is_some() {
+                    final_utc = fu;
+                }
+            }
+            let host = format_combined_host_ip(host_raw.as_deref(), ip_raw.as_deref());
+
             Ok(TimelineRowData {
                 row_num: r.get(0)?,
-                epoch_ms: r.get(1)?,
-                utc_text: r.get(2)?,
+                epoch_ms: final_epoch,
+                utc_text: final_utc,
                 user,
                 host,
                 action,
             })
         })?
         .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    timeline_rows.sort_by(|a, b| {
+        match (a.epoch_ms, b.epoch_ms) {
+            (Some(ea), Some(eb)) => ea.cmp(&eb).then_with(|| a.row_num.cmp(&b.row_num)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.row_num.cmp(&b.row_num),
+        }
+    });
 
     let mut first_epoch: Option<i64> = None;
     let mut last_epoch: Option<i64> = None;
@@ -2148,71 +2336,7 @@ pub fn extract_correlated_events_for_rows(
     let has_time = row_time_available(conn).unwrap_or(false);
     let roles = load_active_roles(conn).unwrap_or_default();
     let role_map: HashMap<String, String> = roles.into_iter().collect();
-
-    let user_col = role_map.get("user").cloned().or_else(|| {
-        columns
-            .iter()
-            .find(|c| {
-                let l = c.original_name.to_lowercase();
-                (l.contains("user") || l.contains("account") || l.contains("username") || l.contains("upn") || l.contains("actor"))
-                    && !l.contains("hosted")
-            })
-            .map(|c| c.sql_name.clone())
-    });
-
-    let host_col = role_map.get("host").cloned().filter(|c| !c.to_lowercase().contains("hosted")).or_else(|| {
-        columns
-            .iter()
-            .find(|c| {
-                let l = c.original_name.to_lowercase();
-                (l.contains("host")
-                    || l.contains("computer")
-                    || l.contains("workstation")
-                    || l.contains("device")
-                    || l.contains("machine"))
-                    && !l.contains("hosted")
-                    && !l.contains("ghost")
-            })
-            .map(|c| c.sql_name.clone())
-    });
-
-    let action_col = role_map
-        .get("commandline")
-        .cloned()
-        .or_else(|| role_map.get("process_name").cloned())
-        .or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    let l = c.original_name.to_lowercase();
-                    (l.contains("operation")
-                        || l.contains("activity")
-                        || l.contains("command")
-                        || l.contains("process")
-                        || l.contains("action")
-                        || l.contains("event_name")
-                        || l.contains("eventname")
-                        || l.contains("workload")
-                        || l.contains("event")
-                        || l.contains("message")
-                        || l.contains("detail"))
-                        && Some(&c.sql_name) != user_col.as_ref()
-                        && Some(&c.sql_name) != host_col.as_ref()
-                        && !l.contains("hosted")
-                })
-                .map(|c| c.sql_name.clone())
-        })
-        .or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    c.inferred_type == "text"
-                        && Some(&c.sql_name) != user_col.as_ref()
-                        && Some(&c.sql_name) != host_col.as_ref()
-                        && !c.original_name.to_lowercase().contains("hosted")
-                })
-                .map(|c| c.sql_name.clone())
-        });
+    let resolved = resolve_timeline_columns(columns, &role_map);
 
     let _ = conn.execute(
         "CREATE TEMP TABLE IF NOT EXISTS _timeline_temp (row_num INTEGER PRIMARY KEY)",
@@ -2227,22 +2351,35 @@ pub fn extract_correlated_events_for_rows(
         }
     }
 
-    let user_sql = user_col
+    let raw_time_sql = resolved
+        .raw_time_col
         .as_ref()
         .map(|c| format!(", r.{}", db::quote_ident(c)))
         .unwrap_or_default();
-    let host_sql = host_col
+    let user_sql = resolved
+        .user_col
         .as_ref()
         .map(|c| format!(", r.{}", db::quote_ident(c)))
         .unwrap_or_default();
-    let action_sql = action_col
+    let host_sql = resolved
+        .host_col
+        .as_ref()
+        .map(|c| format!(", r.{}", db::quote_ident(c)))
+        .unwrap_or_default();
+    let ip_sql = resolved
+        .ip_col
+        .as_ref()
+        .map(|c| format!(", r.{}", db::quote_ident(c)))
+        .unwrap_or_default();
+    let action_sql = resolved
+        .action_col
         .as_ref()
         .map(|c| format!(", r.{}", db::quote_ident(c)))
         .unwrap_or_default();
 
     let query = if has_time {
         format!(
-            "SELECT r.row_num, rt.epoch_ms, rt.utc_text {user_sql} {host_sql} {action_sql}
+            "SELECT r.row_num, rt.epoch_ms, rt.utc_text {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
              FROM _timeline_temp t
              JOIN rows r ON r.row_num = t.row_num
              LEFT JOIN _row_time rt ON rt.row_num = r.row_num
@@ -2250,7 +2387,7 @@ pub fn extract_correlated_events_for_rows(
         )
     } else {
         format!(
-            "SELECT r.row_num, NULL, NULL {user_sql} {host_sql} {action_sql}
+            "SELECT r.row_num, NULL, NULL {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
              FROM _timeline_temp t
              JOIN rows r ON r.row_num = t.row_num
              ORDER BY r.row_num ASC"
@@ -2283,21 +2420,35 @@ pub fn extract_correlated_events_for_rows(
     }
 
     let mut col_offset = 3;
-    let user_idx = if user_col.is_some() {
+    let raw_time_idx = if resolved.raw_time_col.is_some() {
         let idx = col_offset;
         col_offset += 1;
         Some(idx)
     } else {
         None
     };
-    let host_idx = if host_col.is_some() {
+    let user_idx = if resolved.user_col.is_some() {
         let idx = col_offset;
         col_offset += 1;
         Some(idx)
     } else {
         None
     };
-    let action_idx = if action_col.is_some() {
+    let host_idx = if resolved.host_col.is_some() {
+        let idx = col_offset;
+        col_offset += 1;
+        Some(idx)
+    } else {
+        None
+    };
+    let ip_idx = if resolved.ip_col.is_some() {
+        let idx = col_offset;
+        col_offset += 1;
+        Some(idx)
+    } else {
+        None
+    };
+    let action_idx = if resolved.action_col.is_some() {
         let idx = col_offset;
         Some(idx)
     } else {
@@ -2307,13 +2458,31 @@ pub fn extract_correlated_events_for_rows(
     let mut events = Vec::new();
     if let Ok(mut stmt) = conn.prepare(&query) {
         let rows_res = stmt.query_map([], |r| {
+            let epoch_ms: Option<i64> = r.get(1)?;
+            let utc_text: Option<String> = r.get(2)?;
+            let raw_time = raw_time_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
             let user = user_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-            let host = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+            let host_raw = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+            let ip_raw = ip_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
             let action = action_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+
+            let mut final_epoch = epoch_ms;
+            let mut final_utc = utc_text;
+            if final_epoch.is_none() && raw_time.is_some() {
+                let (fe, fu) = time::parse_flexible_timestamp(raw_time.as_ref().unwrap(), true);
+                if fe.is_some() {
+                    final_epoch = fe;
+                }
+                if fu.is_some() {
+                    final_utc = fu;
+                }
+            }
+            let host = format_combined_host_ip(host_raw.as_deref(), ip_raw.as_deref());
+
             Ok((
                 r.get::<_, i64>(0)?,
-                r.get::<_, Option<i64>>(1)?,
-                r.get::<_, Option<String>>(2)?,
+                final_epoch,
+                final_utc,
                 user,
                 host,
                 action,
@@ -2337,6 +2506,14 @@ pub fn extract_correlated_events_for_rows(
             }
         }
     }
+    events.sort_by(|a, b| {
+        match (a.epoch_ms, b.epoch_ms) {
+            (Some(ea), Some(eb)) => ea.cmp(&eb).then_with(|| a.row_num.cmp(&b.row_num)),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => a.row_num.cmp(&b.row_num),
+        }
+    });
     events
 }
 
@@ -2385,7 +2562,7 @@ pub fn collect_events_across_files(
 
         // If _row_time table doesn't exist, try quick timestamp normalization
         if !row_time_available(&conn).unwrap_or(false) {
-            let _ = time::normalize_timestamp_column_with_options(&mut conn, &columns, None, None);
+            let _ = time::normalize_timestamp_column_with_options(&mut conn, &columns, Some("UTC"), Some("month_first"));
         }
 
         let row_ids = match find_matching_timeline_rows(&conn, keywords, &columns) {
@@ -2696,7 +2873,7 @@ pub fn multi_file_hunt(
         };
 
         if !row_time_available(&conn).unwrap_or(false) {
-            let _ = time::normalize_timestamp_column_with_options(&mut conn, &columns, None, None);
+            let _ = time::normalize_timestamp_column_with_options(&mut conn, &columns, Some("UTC"), Some("month_first"));
         }
 
         let row_ids = match find_hunt_rows(&conn, &patterns, &columns) {
@@ -2798,71 +2975,7 @@ pub fn multi_file_hunt(
         let has_time = row_time_available(&conn).unwrap_or(false);
         let roles = load_active_roles(&conn).unwrap_or_default();
         let role_map: HashMap<String, String> = roles.into_iter().collect();
-
-        let user_col = role_map.get("user").cloned().or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    let l = c.original_name.to_lowercase();
-                    (l.contains("user") || l.contains("account") || l.contains("username") || l.contains("upn") || l.contains("actor"))
-                        && !l.contains("hosted")
-                })
-                .map(|c| c.sql_name.clone())
-        });
-
-        let host_col = role_map.get("host").cloned().filter(|c| !c.to_lowercase().contains("hosted")).or_else(|| {
-            columns
-                .iter()
-                .find(|c| {
-                    let l = c.original_name.to_lowercase();
-                    (l.contains("host")
-                        || l.contains("computer")
-                        || l.contains("workstation")
-                        || l.contains("device")
-                        || l.contains("machine"))
-                        && !l.contains("hosted")
-                        && !l.contains("ghost")
-                })
-                .map(|c| c.sql_name.clone())
-        });
-
-        let action_col = role_map
-            .get("commandline")
-            .cloned()
-            .or_else(|| role_map.get("process_name").cloned())
-            .or_else(|| {
-                columns
-                    .iter()
-                    .find(|c| {
-                        let l = c.original_name.to_lowercase();
-                        (l.contains("operation")
-                            || l.contains("activity")
-                            || l.contains("command")
-                            || l.contains("process")
-                            || l.contains("action")
-                            || l.contains("event_name")
-                            || l.contains("eventname")
-                            || l.contains("workload")
-                            || l.contains("event")
-                            || l.contains("message")
-                            || l.contains("detail"))
-                            && Some(&c.sql_name) != user_col.as_ref()
-                            && Some(&c.sql_name) != host_col.as_ref()
-                            && !l.contains("hosted")
-                    })
-                    .map(|c| c.sql_name.clone())
-            })
-            .or_else(|| {
-                columns
-                    .iter()
-                    .find(|c| {
-                        c.inferred_type == "text"
-                            && Some(&c.sql_name) != user_col.as_ref()
-                            && Some(&c.sql_name) != host_col.as_ref()
-                            && !c.original_name.to_lowercase().contains("hosted")
-                    })
-                    .map(|c| c.sql_name.clone())
-            });
+        let resolved = resolve_timeline_columns(&columns, &role_map);
 
         let _ = conn.execute(
             "CREATE TEMP TABLE IF NOT EXISTS _timeline_temp (row_num INTEGER PRIMARY KEY)",
@@ -2877,22 +2990,35 @@ pub fn multi_file_hunt(
             }
         }
 
-        let user_sql = user_col
+        let raw_time_sql = resolved
+            .raw_time_col
             .as_ref()
             .map(|c| format!(", r.{}", db::quote_ident(c)))
             .unwrap_or_default();
-        let host_sql = host_col
+        let user_sql = resolved
+            .user_col
             .as_ref()
             .map(|c| format!(", r.{}", db::quote_ident(c)))
             .unwrap_or_default();
-        let action_sql = action_col
+        let host_sql = resolved
+            .host_col
+            .as_ref()
+            .map(|c| format!(", r.{}", db::quote_ident(c)))
+            .unwrap_or_default();
+        let ip_sql = resolved
+            .ip_col
+            .as_ref()
+            .map(|c| format!(", r.{}", db::quote_ident(c)))
+            .unwrap_or_default();
+        let action_sql = resolved
+            .action_col
             .as_ref()
             .map(|c| format!(", r.{}", db::quote_ident(c)))
             .unwrap_or_default();
 
         let query = if has_time {
             format!(
-                "SELECT r.row_num, rt.epoch_ms, rt.utc_text {user_sql} {host_sql} {action_sql}
+                "SELECT r.row_num, rt.epoch_ms, rt.utc_text {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
                  FROM _timeline_temp t
                  JOIN rows r ON r.row_num = t.row_num
                  LEFT JOIN _row_time rt ON rt.row_num = r.row_num
@@ -2900,7 +3026,7 @@ pub fn multi_file_hunt(
             )
         } else {
             format!(
-                "SELECT r.row_num, NULL, NULL {user_sql} {host_sql} {action_sql}
+                "SELECT r.row_num, NULL, NULL {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
                  FROM _timeline_temp t
                  JOIN rows r ON r.row_num = t.row_num
                  ORDER BY r.row_num ASC"
@@ -2933,21 +3059,35 @@ pub fn multi_file_hunt(
         }
 
         let mut col_offset = 3;
-        let user_idx = if user_col.is_some() {
+        let raw_time_idx = if resolved.raw_time_col.is_some() {
             let idx = col_offset;
             col_offset += 1;
             Some(idx)
         } else {
             None
         };
-        let host_idx = if host_col.is_some() {
+        let user_idx = if resolved.user_col.is_some() {
             let idx = col_offset;
             col_offset += 1;
             Some(idx)
         } else {
             None
         };
-        let action_idx = if action_col.is_some() {
+        let host_idx = if resolved.host_col.is_some() {
+            let idx = col_offset;
+            col_offset += 1;
+            Some(idx)
+        } else {
+            None
+        };
+        let ip_idx = if resolved.ip_col.is_some() {
+            let idx = col_offset;
+            col_offset += 1;
+            Some(idx)
+        } else {
+            None
+        };
+        let action_idx = if resolved.action_col.is_some() {
             let idx = col_offset;
             Some(idx)
         } else {
@@ -2958,13 +3098,31 @@ pub fn multi_file_hunt(
             let mut stmt = conn.prepare(&query);
             if let Ok(ref mut s) = stmt {
                 if let Ok(rows) = s.query_map([], |r| {
+                    let epoch_ms: Option<i64> = r.get(1)?;
+                    let utc_text: Option<String> = r.get(2)?;
+                    let raw_time = raw_time_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
                     let user = user_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    let host = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+                    let host_raw = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+                    let ip_raw = ip_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
                     let action = action_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+
+                    let mut final_epoch = epoch_ms;
+                    let mut final_utc = utc_text;
+                    if final_epoch.is_none() && raw_time.is_some() {
+                        let (fe, fu) = time::parse_flexible_timestamp(raw_time.as_ref().unwrap(), true);
+                        if fe.is_some() {
+                            final_epoch = fe;
+                        }
+                        if fu.is_some() {
+                            final_utc = fu;
+                        }
+                    }
+                    let host = format_combined_host_ip(host_raw.as_deref(), ip_raw.as_deref());
+
                     Ok((
                         r.get::<_, i64>(0)?,
-                        r.get::<_, Option<i64>>(1)?,
-                        r.get::<_, Option<String>>(2)?,
+                        final_epoch,
+                        final_utc,
                         user,
                         host,
                         action,
@@ -3615,4 +3773,36 @@ mod tests {
         assert!(hunt_text.contains("attacker@external.com"), "Findings must highlight actor: {hunt_text}");
         assert!(hunt_text.contains("exfil@hacker.com"), "Findings must highlight ForwardTo recipient: {hunt_text}");
     }
+
+    #[test]
+    fn test_format_combined_host_ip_and_generic_filtering() {
+        // Generic device names like "PC", "Other", "Unknown" must be suppressed
+        assert_eq!(format_combined_host_ip(Some("PC"), Some("192.168.1.50")), Some("192.168.1.50".to_string()));
+        assert_eq!(format_combined_host_ip(Some("Other"), Some("10.0.0.1")), Some("10.0.0.1".to_string()));
+        assert_eq!(format_combined_host_ip(Some("Mac"), None), None);
+        assert_eq!(format_combined_host_ip(Some("PC"), None), None);
+
+        // Real host and IP combined
+        assert_eq!(format_combined_host_ip(Some("WKSTN-01"), Some("192.168.1.50")), Some("WKSTN-01 (192.168.1.50)".to_string()));
+        // GUID device id and IP combined
+        assert_eq!(format_combined_host_ip(Some("a1b2c3d4-e5f6-7890-abcd-ef1234567890"), Some("68.57.203.140")), Some("68.57.203.140 [a1b2c3d4-e5f6-7890-abcd-ef1234567890]".to_string()));
+        // Host equal to IP
+        assert_eq!(format_combined_host_ip(Some("192.168.1.50"), Some("192.168.1.50")), Some("192.168.1.50".to_string()));
+        // IP only
+        assert_eq!(format_combined_host_ip(None, Some("192.168.1.50")), Some("192.168.1.50".to_string()));
+    }
+
+    #[test]
+    fn test_flexible_timestamp_parsing_for_timeline() {
+        // 12-hour AM/PM format
+        let (epoch1, utc1) = time::parse_flexible_timestamp("9/2/2026 2:16:04 PM", true);
+        assert!(epoch1.is_some(), "Must parse 12-hour PM timestamp");
+        assert_eq!(utc1.as_deref(), Some("2026-09-02T14:16:04Z"));
+
+        // Naive 24hr format defaulting to UTC
+        let (epoch2, utc2) = time::parse_flexible_timestamp("2026-09-02T20:54:37", true);
+        assert!(epoch2.is_some(), "Must parse naive 24hr timestamp");
+        assert_eq!(utc2.as_deref(), Some("2026-09-02T20:54:37Z"));
+    }
 }
+
