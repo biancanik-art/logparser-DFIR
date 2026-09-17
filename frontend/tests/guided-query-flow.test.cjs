@@ -1667,3 +1667,73 @@ test("unified correlated grid row detail drawer inspects raw fields without leav
   assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), true);
 });
 
+test("unified correlated grid row jump from source file preserves context and allows instant return", async () => {
+  const app = bootApp();
+  await loadFixture(app);
+
+  const mockEvents = [
+    {
+      fileName: "activity_log_a.xlsx",
+      path: "/data/activity_log_a.xlsx",
+      rowNum: 14,
+      epochMs: 1773055300000,
+      utcText: "2026-03-09 11:21:40 UTC",
+      user: "user_a@domain.local",
+      host: "10.0.0.5",
+      action: "UserLoggedIn",
+      mitreTags: ["T1078 Valid Accounts"],
+    },
+  ];
+
+  app.debug.renderUnifiedCorrelatedGridForTest(mockEvents, "Correlation: TEST-MERGED-JUMP");
+  await settleFrontend();
+
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), true);
+
+  // Jump from Source File
+  await app.debug.jumpToNativeFileRowForTest("/data/activity_log_a.xlsx", 14, 1);
+  await settleFrontend();
+
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), false);
+  const savedContext = app.debug.getSavedUnifiedContextForTest();
+  assert.ok(savedContext, "savedUnifiedContext must be preserved");
+  assert.equal(savedContext.jumpedIndex, 1);
+  assert.equal(savedContext.jumpedRowNum, 14);
+
+  const returnBtn = app.document.getElementById("grid-return-unified-btn");
+  assert.equal(returnBtn.classList.contains("hidden"), false);
+
+  returnBtn.dispatchEvent({ type: "click" });
+  await settleFrontend();
+
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), true);
+  assert.equal(app.debug.getUnifiedCorrelatedRowsForTest().length, 1);
+});
+
+test("shortcuts modal opens and closes correctly via button and escape", async () => {
+  const app = bootApp();
+  await loadFixture(app);
+
+  const modal = app.document.getElementById("shortcuts-modal");
+  const backdrop = app.document.getElementById("shortcuts-modal-backdrop");
+  const btn = app.document.getElementById("shortcuts-btn");
+  const closeBtn = app.document.getElementById("shortcuts-modal-close-btn");
+
+  assert.equal(modal.classList.contains("hidden"), true);
+  assert.equal(backdrop.classList.contains("hidden"), true);
+
+  // Click button to open
+  btn.dispatchEvent({ type: "click" });
+  await settleFrontend();
+
+  assert.equal(modal.classList.contains("hidden"), false);
+  assert.equal(backdrop.classList.contains("hidden"), false);
+
+  // Click close button
+  closeBtn.dispatchEvent({ type: "click" });
+  await settleFrontend();
+
+  assert.equal(modal.classList.contains("hidden"), true);
+  assert.equal(backdrop.classList.contains("hidden"), true);
+});
+

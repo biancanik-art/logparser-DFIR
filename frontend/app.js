@@ -159,6 +159,11 @@
   const hiddenRowsLabel = document.getElementById("hidden-rows-label");
   const hiddenColsBadge = document.getElementById("hidden-cols-badge");
   const hiddenColsLabel = document.getElementById("hidden-cols-label");
+  const shortcutsBtn = document.getElementById("shortcuts-btn");
+  const shortcutsModal = document.getElementById("shortcuts-modal");
+  const shortcutsModalCloseBtn = document.getElementById("shortcuts-modal-close-btn");
+  const shortcutsModalBackdrop = document.getElementById("shortcuts-modal-backdrop");
+  const gridContextMenu = document.getElementById("grid-context-menu");
 
   // -- state --------------------------------------------------------------
   const DEFAULT_PAGE_SIZE = 300;
@@ -1229,9 +1234,9 @@
         sorter: "number",
       },
       {
-        title: "Actions",
-        width: 145,
-        minWidth: 135,
+        title: "Details",
+        width: 75,
+        minWidth: 65,
         frozen: true,
         hozAlign: "center",
         headerHozAlign: "center",
@@ -1240,25 +1245,22 @@
           return `
             <div class="unified-action-cell">
               <button type="button" class="btn-unified-detail" title="Quick inspect all raw columns for this row without leaving Unified View">👁️ Details</button>
-              <button type="button" class="btn-unified-jump" title="Jump to native file view at this row">🔍 Jump</button>
             </div>
           `;
         },
         cellClick(e, cell) {
           const rowData = cell.getRow().getData();
           const target = e.target;
-          if (target && target.classList.contains("btn-unified-detail")) {
+          if (target && (target.classList.contains("btn-unified-detail") || target.closest(".btn-unified-detail"))) {
             openUnifiedRowDetailDrawer(rowData);
-          } else if (target && target.classList.contains("btn-unified-jump")) {
-            jumpToNativeFileRow(rowData.path, rowData.row_num, rowData._unifiedIndex);
           }
         },
       },
       {
         title: "📄 Source File",
         field: "fileName",
-        width: 190,
-        minWidth: 140,
+        width: 175,
+        minWidth: 130,
         headerSort: true,
         visible: !hiddenColFields.has("fileName"),
         headerClick(e, col) {
@@ -1272,7 +1274,16 @@
         },
         formatter(cell) {
           const val = cell.getValue() || "";
-          return `<span class="unified-file-badge" title="${escapeHtml(cell.getRow().getData().path || val)}">📄 ${escapeHtml(val)}</span>`;
+          const rowData = cell.getRow().getData();
+          const rowNum = rowData.row_num || rowData.rowNum || 1;
+          const fullPath = rowData.path || val;
+          return `<button type="button" class="unified-file-badge" title="Click to jump to ${escapeHtml(val)} at native row #${rowNum}&#10;Path: ${escapeHtml(fullPath)}">📄 ${escapeHtml(val)} ↗</button>`;
+        },
+        cellClick(e, cell) {
+          const rowData = cell.getRow().getData();
+          if (rowData && (rowData.path || rowData.fileName)) {
+            jumpToNativeFileRow(rowData.path, rowData.row_num, rowData._unifiedIndex);
+          }
         },
       },
       {
@@ -4880,6 +4891,72 @@
     updateHiddenIndicators();
   }
 
+  function hideContextMenu() {
+    if (gridContextMenu) {
+      gridContextMenu.classList.add("hidden");
+      gridContextMenu.innerHTML = "";
+    }
+  }
+
+  function showContextMenu(e, items) {
+    if (!gridContextMenu || !items || items.length === 0) return;
+    gridContextMenu.innerHTML = "";
+
+    items.forEach((item) => {
+      if (item.separator) {
+        const sep = document.createElement("div");
+        sep.className = "grid-context-menu-separator";
+        gridContextMenu.appendChild(sep);
+        return;
+      }
+      const el = document.createElement("div");
+      el.className = "grid-context-menu-item";
+      el.setAttribute("role", "menuitem");
+      el.innerHTML = `
+        <span class="menu-label">${item.icon ? item.icon + " " : ""}${escapeHtml(item.label)}</span>
+        ${item.shortcut ? `<span class="menu-shortcut">${escapeHtml(item.shortcut)}</span>` : ""}
+      `;
+      el.addEventListener("click", (evt) => {
+        evt.stopPropagation();
+        hideContextMenu();
+        if (typeof item.action === "function") {
+          item.action();
+        }
+      });
+      gridContextMenu.appendChild(el);
+    });
+
+    gridContextMenu.classList.remove("hidden");
+
+    const menuWidth = 220;
+    const menuHeight = gridContextMenu.offsetHeight || (items.length * 32);
+    let x = e.clientX || 100;
+    let y = e.clientY || 100;
+
+    const winW = typeof window !== "undefined" ? window.innerWidth : 1000;
+    const winH = typeof window !== "undefined" ? window.innerHeight : 800;
+
+    if (x + menuWidth > winW) {
+      x = Math.max(10, winW - menuWidth - 10);
+    }
+    if (y + menuHeight > winH) {
+      y = Math.max(10, winH - menuHeight - 10);
+    }
+
+    gridContextMenu.style.left = `${x}px`;
+    gridContextMenu.style.top = `${y}px`;
+  }
+
+  function openShortcutsModal() {
+    if (shortcutsModal) shortcutsModal.classList.remove("hidden");
+    if (shortcutsModalBackdrop) shortcutsModalBackdrop.classList.remove("hidden");
+  }
+
+  function closeShortcutsModal() {
+    if (shortcutsModal) shortcutsModal.classList.add("hidden");
+    if (shortcutsModalBackdrop) shortcutsModalBackdrop.classList.add("hidden");
+  }
+
   function updateColumnHeaderSelectionStyles() {
     if (typeof document === "undefined") return;
     if (table && typeof table.getColumns === "function") {
@@ -6772,6 +6849,14 @@
       );
 
       if (e.key === "Escape") {
+        if (gridContextMenu && !gridContextMenu.classList.contains("hidden")) {
+          hideContextMenu();
+          return;
+        }
+        if (shortcutsModal && !shortcutsModal.classList.contains("hidden")) {
+          closeShortcutsModal();
+          return;
+        }
         if (selectedColFields.size > 0) {
           selectedColFields.clear();
           updateColumnHeaderSelectionStyles();
@@ -6801,6 +6886,12 @@
           returnToUnifiedCorrelatedGrid();
           return;
         }
+      }
+
+      if (e.key === "F1" || (e.key === "?" && !isInput)) {
+        e.preventDefault();
+        openShortcutsModal();
+        return;
       }
 
       if (!isInput && (e.key === "Delete" || e.key === "Backspace")) {
@@ -6856,6 +6947,176 @@
       }
     });
   }
+
+  // Grid Right-Click Context Menu Listeners
+  const gridAreaEl = document.getElementById("grid-area") || document.getElementById("grid");
+  if (gridAreaEl) {
+    gridAreaEl.addEventListener("contextmenu", (e) => {
+      if (!table) return;
+
+      // 1. Column Header Right-Click
+      const colEl = e.target && typeof e.target.closest === "function" ? e.target.closest(".tabulator-col") : null;
+      if (colEl) {
+        const field = colEl.getAttribute("tabulator-field");
+        if (!field || field === "row_num" || field === "_unifiedIndex") return;
+
+        e.preventDefault();
+
+        // Resolve display title
+        let colTitle = field;
+        const colDef = Array.isArray(columns) ? columns.find((c) => c.sqlName === field) : null;
+        if (colDef && colDef.originalName) {
+          colTitle = colDef.originalName;
+        } else {
+          const tabCol = typeof table.getColumn === "function" ? table.getColumn(field) : null;
+          if (tabCol && typeof tabCol.getDefinition === "function") {
+            colTitle = tabCol.getDefinition().title || field;
+          }
+        }
+
+        const isPinned = lockedColumnFields.has(field);
+
+        const items = [
+          {
+            icon: "👁️",
+            label: `Hide Column "${colTitle}"`,
+            shortcut: "Alt+Click",
+            action: () => hideColumn(field),
+          },
+          {
+            icon: isPinned ? "🔓" : "📌",
+            label: isPinned ? "Unpin Column" : "Pin Column to Left",
+            shortcut: "Dbl-Click",
+            action: () => toggleColumnLock(field),
+          },
+          {
+            icon: "📋",
+            label: "Copy Column Name",
+            action: () => {
+              if (navigator && navigator.clipboard) {
+                navigator.clipboard.writeText(colTitle);
+              }
+            },
+          },
+        ];
+
+        if (hiddenColFields.size > 0) {
+          items.push({ separator: true });
+          items.push({
+            icon: "↩",
+            label: `Restore All Hidden Columns (${hiddenColFields.size})`,
+            action: () => unhideAllColumns(),
+          });
+        }
+
+        showContextMenu(e, items);
+        return;
+      }
+
+      // 2. Row Right-Click
+      const rowEl = e.target && typeof e.target.closest === "function" ? e.target.closest(".tabulator-row") : null;
+      if (rowEl) {
+        e.preventDefault();
+
+        const selRows = typeof table.getSelectedRows === "function" ? table.getSelectedRows() : [];
+        const isMulti = selRows && selRows.length > 1;
+
+        let rowData = null;
+        if (typeof table.getRows === "function") {
+          const allRows = table.getRows();
+          const match = allRows.find((r) => r.getElement && r.getElement() === rowEl);
+          if (match && typeof match.getData === "function") {
+            rowData = match.getData();
+          }
+        }
+
+        const rowNum = rowData ? (rowData.row_num || rowData.rowNum || rowData._unifiedIndex) : null;
+        const items = [];
+
+        if (isMulti) {
+          items.push({
+            icon: "👁️",
+            label: `Hide ${selRows.length} Selected Rows`,
+            shortcut: "Del",
+            action: () => hideSelectedRows(),
+          });
+        } else if (rowData) {
+          items.push({
+            icon: "👁️",
+            label: rowNum ? `Hide Row #${rowNum}` : "Hide Row",
+            shortcut: "Del",
+            action: () => {
+              if (rowData.row_num !== undefined) {
+                hiddenRowNums.add(rowData.row_num);
+              }
+              if (rowEl && typeof rowEl.remove === "function") {
+                rowEl.remove();
+              }
+              updateHiddenIndicators();
+              updateRowCountLabel();
+            },
+          });
+        }
+
+        if (isUnifiedCorrelatedMode && rowData) {
+          items.push({
+            icon: "🔍",
+            label: "Jump to Native File Row",
+            action: () => jumpToNativeFileRow(rowData.path, rowData.row_num, rowData._unifiedIndex),
+          });
+          items.push({
+            icon: "👁️",
+            label: "Inspect Details",
+            action: () => openUnifiedRowDetailDrawer(rowData),
+          });
+        }
+
+        if (rowData) {
+          items.push({
+            icon: "📋",
+            label: "Copy Row JSON",
+            action: () => {
+              if (navigator && navigator.clipboard) {
+                navigator.clipboard.writeText(JSON.stringify(rowData, null, 2));
+              }
+            },
+          });
+        }
+
+        if (hiddenRowNums.size > 0) {
+          items.push({ separator: true });
+          items.push({
+            icon: "↩",
+            label: `Restore All Hidden Rows (${hiddenRowNums.size})`,
+            shortcut: "Esc",
+            action: () => unhideAllRows(),
+          });
+        }
+
+        showContextMenu(e, items);
+        return;
+      }
+
+      hideContextMenu();
+    });
+  }
+
+  if (typeof document !== "undefined") {
+    document.addEventListener("click", () => hideContextMenu());
+    document.addEventListener("scroll", () => hideContextMenu(), true);
+  }
+
+  if (shortcutsBtn) {
+    shortcutsBtn.addEventListener("click", openShortcutsModal);
+  }
+  if (shortcutsModalCloseBtn) {
+    shortcutsModalCloseBtn.addEventListener("click", closeShortcutsModal);
+  }
+  if (shortcutsModalBackdrop) {
+    shortcutsModalBackdrop.addEventListener("click", closeShortcutsModal);
+  }
+  closeShortcutsModal();
+  hideContextMenu();
 
   if (firstPageBtn) {
     firstPageBtn.addEventListener("click", () => {
@@ -7242,6 +7503,12 @@
     },
     getSelectedColFieldsForTest() {
       return Array.from(selectedColFields);
+    },
+    openShortcutsModalForTest() {
+      return openShortcutsModal();
+    },
+    closeShortcutsModalForTest() {
+      return closeShortcutsModal();
     },
   });
 })();

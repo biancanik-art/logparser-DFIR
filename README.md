@@ -26,6 +26,22 @@ See the [wiki](../../wiki) for a full user guide.
 - Interactive Threat Enrichment & Attack Chains: Clickable MITRE ATT&CK tactics, techniques, and correlated attack chains with 1-click drilldowns to filter the Evidence Grid.
 - One-click multi-sheet XLSX report export: a case-summary sheet, a chronological MITRE-mapped timeline, and one sheet per matched technique category — every row traceable back to its original source row.
 
+## Grid Controls & Keyboard Shortcuts
+
+| Action | Shortcut / Gesture | Description |
+| :--- | :--- | :--- |
+| **Hide Column** | `Alt` + Click header<br>*or* Right-click header &rarr; `Hide Column` | Immediately hides any column from view. |
+| **Multi-Select Columns** | `Ctrl` + Click headers | Select multiple column headers, then press `Delete` to hide them all at once. |
+| **Pin / Unpin Column** | Double-click header<br>*or* Right-click header &rarr; `Pin Column` | Freezes column to the left for persistent horizontal scrolling. |
+| **Hide Row(s)** | Select row(s) + `Delete` / `Backspace`<br>*or* Right-click row &rarr; `Hide Row` | Suppresses unwanted rows non-destructively from your active investigation session. |
+| **Multi-Select Rows** | `Ctrl` + Click / `Shift` + Click | Select discrete rows or a contiguous range of rows for bulk hiding. |
+| **Restore Hidden Rows** | Click red `● N hidden` in status bar<br>*or* Press `Esc` | Brings all hidden rows back into view. |
+| **Restore Hidden Columns** | Click amber `● N cols hidden` in status bar | Restores all hidden columns to the grid. |
+| **Jump to Source File** | Click `📄 filename ↗` badge | Switches to that source file in the Evidence Grid, focused at that exact row. |
+| **Return to Unified Timeline** | Click `↩ Return to Unified View`<br>*or* `Alt` + `Left` / `Esc` | Restores your previous position and filter context in the correlated timeline. |
+| **Inspect Raw Row Details** | Double-click row<br>*or* Click `👁️ Details` | Opens the slide-over inspector drawer displaying all raw source fields. |
+| **In-App Shortcuts Help** | Press `F1` or `?`<br>*or* Click `⌨ Shortcuts` toolbar button | Displays the interactive in-app cheat sheet. |
+
 ## Try it
 
 Sample data is included under `testdata/`:

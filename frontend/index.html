@@ -18,6 +18,7 @@
       </div>
       <div id="file-info" class="file-info">No file loaded</div>
       <div class="toolbar-spacer"></div>
+      <button id="shortcuts-btn" class="btn btn-small" type="button" title="View keyboard shortcuts and grid controls (F1 or ?)">⌨ Shortcuts</button>
       <button id="report-export-btn" class="btn hidden" disabled>Threat Report</button>
       <button id="export-csv-btn" class="btn hidden" disabled>Export CSV</button>
       <button id="export-xlsx-btn" class="btn hidden" disabled>Export Excel</button>
@@ -632,6 +633,97 @@
     </div>
   </div>
   <div id="unified-drawer-backdrop" class="unified-drawer-backdrop hidden"></div>
+
+  <!-- Grid Right-Click Context Menu -->
+  <div id="grid-context-menu" class="grid-context-menu hidden" role="menu"></div>
+
+  <!-- Keyboard Shortcuts & Grid Controls Cheat Sheet Modal -->
+  <div id="shortcuts-modal" class="shortcuts-modal hidden" role="dialog" aria-modal="true" aria-labelledby="shortcuts-modal-title">
+    <div class="shortcuts-modal-card">
+      <div class="shortcuts-modal-header">
+        <div class="shortcuts-modal-title-group">
+          <span class="shortcuts-modal-badge">Cheat Sheet</span>
+          <h3 id="shortcuts-modal-title">Grid Controls &amp; Keyboard Shortcuts</h3>
+        </div>
+        <button id="shortcuts-modal-close-btn" class="btn btn-small btn-icon" title="Close (Esc)">✕</button>
+      </div>
+      <div class="shortcuts-modal-body">
+        <div class="shortcuts-section">
+          <div class="shortcuts-section-title">📊 Column Management</div>
+          <div class="shortcuts-grid">
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Alt</kbd> + <kbd>Click</kbd></span>
+              <span class="shortcut-desc"><strong>Hide Column</strong> &mdash; Instantly hide any column from view</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Right-Click</kbd></span>
+              <span class="shortcut-desc"><strong>Column Menu</strong> &mdash; Hide, Pin, Copy, or Restore columns</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Ctrl</kbd> + <kbd>Click</kbd></span>
+              <span class="shortcut-desc"><strong>Multi-Select</strong> &mdash; Select multiple headers, then <kbd>Del</kbd> to hide all</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Double-Click</kbd></span>
+              <span class="shortcut-desc"><strong>Pin / Unpin</strong> &mdash; Freeze column to left while horizontally scrolling</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Click</kbd></span>
+              <span class="shortcut-desc"><strong>Sort Column</strong> &mdash; Sort ascending, descending, or clear</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="shortcuts-section">
+          <div class="shortcuts-section-title">📋 Row &amp; Evidence Management</div>
+          <div class="shortcuts-grid">
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Del</kbd> / <kbd>Backspace</kbd></span>
+              <span class="shortcut-desc"><strong>Hide Rows</strong> &mdash; Suppress selected row(s) from current session</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Right-Click</kbd></span>
+              <span class="shortcut-desc"><strong>Row Menu</strong> &mdash; Quick Hide Row, Inspect Details, or Copy JSON</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Shift</kbd> / <kbd>Ctrl</kbd> + <kbd>Click</kbd></span>
+              <span class="shortcut-desc"><strong>Multi-Select</strong> &mdash; Select a range or set of rows for bulk hiding</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Esc</kbd></span>
+              <span class="shortcut-desc"><strong>Clear / Restore</strong> &mdash; Clear selection, search, or restore hidden rows</span>
+            </div>
+          </div>
+        </div>
+
+        <div class="shortcuts-section">
+          <div class="shortcuts-section-title">🌐 Unified Timeline &amp; Navigation</div>
+          <div class="shortcuts-grid">
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Click</kbd> 📄 Badge</span>
+              <span class="shortcut-desc"><strong>Jump to File</strong> &mdash; Jump directly to native file at that row</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Alt</kbd> + <kbd>Left</kbd> / <kbd>Esc</kbd></span>
+              <span class="shortcut-desc"><strong>Return to Unified</strong> &mdash; Restore exact position in correlated timeline</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>Double-Click</kbd> Row</span>
+              <span class="shortcut-desc"><strong>Inspect Details</strong> &mdash; Open slide-over drawer with all raw columns</span>
+            </div>
+            <div class="shortcut-item">
+              <span class="shortcut-keys"><kbd>F1</kbd> or <kbd>?</kbd></span>
+              <span class="shortcut-desc"><strong>Open Help</strong> &mdash; Display this shortcut cheat sheet</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="shortcuts-modal-footer">
+        <span class="shortcuts-tip">💡 <em>Tip:</em> Look at the bottom-left status bar for <span style="color:#ef4444">● N hidden</span> and <span style="color:#f59e0b">● N cols hidden</span> badges to restore hidden items anytime with a single click.</span>
+      </div>
+    </div>
+  </div>
+  <div id="shortcuts-modal-backdrop" class="shortcuts-modal-backdrop hidden"></div>
 
   <script src="vendor/tabulator/tabulator.min.js"></script>
   <script src="app.js"></script>
