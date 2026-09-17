@@ -11,7 +11,7 @@ See the [wiki](../../wiki) for a full user guide.
 
 ## Features
 
-- **Multi-File Cross-Log Correlation**: Ingest multiple disparate logs (M365 UAL, Windows Event Logs, Sysmon, Firewall, VPN) simultaneously without forcing them into a flattened, sparse schema.
+- **Multi-File Cross-Log Correlation**: Ingest multiple disparate logs (M365 UAL, Windows Event Logs, Sysmon, Firewall, VPN) simultaneously without forcing them into a flattened, sparse schema. *(Note: When opening multiple files for cross-log correlation, switch to each file once via the toolbar dropdown or Multi-File tab to build its local SQLite search database).*
 - **Global Pivot Search**: Search entities (IPs, users, hashes, domains) across all open files in parallel with instant snippet previews.
 - **Shared Indicator (IOC) Co-occurrence Matrix**: Detect indicators that appear across 2 or more evidence files, with export to Excel, CSV, or JSON.
 - **Whole-Picture 1-Click Filter**: Isolate all correlated timeline events directly in the Evidence Grid with a single click.
