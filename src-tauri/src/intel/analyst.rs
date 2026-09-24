@@ -83,6 +83,8 @@ pub struct CorrelatedTimelineEvent {
     pub host: Option<String>,
     #[serde(default)]
     pub action: Option<String>,
+    #[serde(default, alias = "rawDetails", alias = "raw_details")]
+    pub details: Option<String>,
     #[serde(default, alias = "mitreTags", alias = "mitre_tags")]
     pub mitre_tags: Vec<String>,
 }
@@ -1824,6 +1826,144 @@ pub struct ResolvedTimelineColumns {
     pub ip_col: Option<String>,
     pub action_col: Option<String>,
     pub raw_time_col: Option<String>,
+    pub method_col: Option<String>,
+    pub status_col: Option<String>,
+    pub substatus_col: Option<String>,
+    pub uri_col: Option<String>,
+    pub query_col: Option<String>,
+    pub bytes_col: Option<String>,
+    pub user_agent_col: Option<String>,
+    pub referer_col: Option<String>,
+    pub detail_col: Option<String>,
+}
+
+pub fn http_status_description(code_str: &str) -> Option<&'static str> {
+    match code_str.trim() {
+        "200" => Some("200 OK"),
+        "201" => Some("201 Created"),
+        "202" => Some("202 Accepted"),
+        "204" => Some("204 No Content"),
+        "301" => Some("301 Moved Permanently"),
+        "302" => Some("302 Found"),
+        "304" => Some("304 Not Modified"),
+        "400" => Some("400 Bad Request"),
+        "401" => Some("401 Unauthorized"),
+        "403" => Some("403 Forbidden"),
+        "404" => Some("404 Not Found"),
+        "405" => Some("405 Method Not Allowed"),
+        "408" => Some("408 Request Timeout"),
+        "429" => Some("429 Too Many Requests"),
+        "500" => Some("500 Internal Server Error"),
+        "502" => Some("502 Bad Gateway"),
+        "503" => Some("503 Service Unavailable"),
+        "504" => Some("504 Gateway Timeout"),
+        _ => None,
+    }
+}
+
+pub fn format_json_value(val: &serde_json::Value) -> String {
+    match val {
+        serde_json::Value::Object(map) => {
+            let mut entries: Vec<String> = Vec::new();
+            for (k, v) in map {
+                match v {
+                    serde_json::Value::String(s) => entries.push(format!("{k}={s}")),
+                    serde_json::Value::Number(n) => entries.push(format!("{k}={n}")),
+                    serde_json::Value::Bool(b) => entries.push(format!("{k}={b}")),
+                    serde_json::Value::Null => {},
+                    _ => entries.push(format!("{k}={v}")),
+                }
+            }
+            entries.join(", ")
+        }
+        serde_json::Value::Array(arr) => {
+            serde_json::to_string(arr).unwrap_or_default()
+        }
+        _ => val.to_string(),
+    }
+}
+
+pub fn synthesize_event_details(
+    status: Option<&str>,
+    method: Option<&str>,
+    uri: Option<&str>,
+    query: Option<&str>,
+    bytes: Option<&str>,
+    user_agent: Option<&str>,
+    referer: Option<&str>,
+    substatus: Option<&str>,
+    detail: Option<&str>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+
+    if let Some(s) = status.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        let status_desc = if let Some(desc) = http_status_description(s) {
+            let reason = desc.strip_prefix(s).map(str::trim).unwrap_or(desc);
+            if let Some(sub) = substatus.map(str::trim).filter(|x| !x.is_empty() && *x != "-" && *x != "0") {
+                format!("[{s}.{sub} {reason}]")
+            } else {
+                format!("[{desc}]")
+            }
+        } else if s.chars().all(|c| c.is_ascii_digit()) {
+            if let Some(sub) = substatus.map(str::trim).filter(|x| !x.is_empty() && *x != "-" && *x != "0") {
+                format!("[Status {s}.{sub}]")
+            } else {
+                format!("[Status {s}]")
+            }
+        } else {
+            format!("[{s}]")
+        };
+        parts.push(status_desc);
+    }
+
+    if let Some(m) = method.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        parts.push(format!("method={m}"));
+    }
+
+    if let Some(u) = uri.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        parts.push(format!("path={u}"));
+    }
+
+    if let Some(q) = query.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        parts.push(format!("query={q}"));
+    }
+
+    if let Some(b) = bytes.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        if b.chars().all(|c| c.is_ascii_digit()) {
+            parts.push(format!("bytes={b}"));
+        } else {
+            parts.push(format!("size={b}"));
+        }
+    }
+
+    if let Some(ua) = user_agent.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        parts.push(format!("agent={ua}"));
+    }
+
+    if let Some(ref_val) = referer.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        parts.push(format!("referer={ref_val}"));
+    }
+
+    if let Some(d) = detail.map(str::trim).filter(|s| !s.is_empty() && *s != "-") {
+        if (d.starts_with('{') && d.ends_with('}')) || (d.starts_with('[') && d.ends_with(']')) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(d) {
+                let formatted = format_json_value(&val);
+                if !formatted.is_empty() {
+                    parts.push(formatted);
+                }
+            } else {
+                parts.push(d.to_string());
+            }
+        } else if Some(d) != uri && Some(d) != method && Some(d) != query {
+            parts.push(d.to_string());
+        }
+    }
+
+    if parts.is_empty() {
+        None
+    } else {
+        Some(parts.join(" | "))
+    }
 }
 
 pub fn is_device_category_or_type_col(name: &str) -> bool {
@@ -1953,6 +2093,7 @@ pub fn resolve_timeline_columns(
                         || l.contains("eventname")
                         || l.contains("workload")
                         || l.contains("event")
+                        || (l.contains("request") && !l.contains("request_id") && !l.contains("requestid"))
                         || l.contains("message")
                         || l.contains("detail"))
                         && Some(&c.sql_name) != user_col.as_ref()
@@ -2006,12 +2147,96 @@ pub fn resolve_timeline_columns(
             .map(|c| c.sql_name.clone())
     });
 
+    let method_col = role_map.get("method").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+            l == "method" || l == "csmethod" || l == "httpmethod" || l == "verb" || l == "requestmethod"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let status_col = role_map.get("status").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+            l == "status" || l == "scstatus" || l == "statuscode" || l == "httpstatus" 
+                || l == "responsestatus" || l == "responsecode" || l == "resultcode"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let substatus_col = role_map.get("substatus").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+            l == "scsubstatus" || l == "substatus" || l == "scwin32status" || l == "win32status"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let uri_col = role_map.get("uri").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+            l == "csuristem" || l == "uristem" || l == "requesturi" || l == "uri" || l == "url"
+                || l == "path" || l == "csuri" || l == "stem" || l == "targetpath"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let query_col = role_map.get("query").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+            l == "csuriquery" || l == "uriquery" || l == "query" || l == "querystring"
+                || l == "params" || l == "parameters" || l == "args" || l == "arguments"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let bytes_col = role_map.get("bytes").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+            l == "scbytes" || l == "bytessent" || l == "bodybytessent" || l == "bytes"
+                || l == "contentlength" || l == "csbytes" || l == "size"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let user_agent_col = role_map.get("useragent").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' ', '(', ')'], "");
+            l == "useragent" || l == "csuseragent" || l == "agent"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let referer_col = role_map.get("referer").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' ', '(', ')'], "");
+            l == "referer" || l == "csreferer" || l == "referrer"
+        }).map(|c| c.sql_name.clone())
+    });
+
+    let detail_col = role_map.get("details").cloned().or_else(|| {
+        columns.iter().find(|c| {
+            let l = c.original_name.to_lowercase().replace(['_', '-', ' '], "");
+            (l == "detail" || l == "details" || l == "message" || l == "msg"
+                || l == "rawrecord" || l == "rawlog" || l == "logline" || l == "payload"
+                || l == "json" || l == "properties" || l == "eventdata" || l == "extra" || l == "data"
+                || l == "commandline" || l == "scriptblocktext" || l == "targetfilename" || l == "filepath")
+                && Some(&c.sql_name) != user_col.as_ref()
+                && Some(&c.sql_name) != host_col.as_ref()
+                && Some(&c.sql_name) != ip_col.as_ref()
+                && Some(&c.sql_name) != action_col.as_ref()
+                && Some(&c.sql_name) != uri_col.as_ref()
+        }).map(|c| c.sql_name.clone())
+    });
+
     ResolvedTimelineColumns {
         user_col,
         host_col,
         ip_col,
         action_col,
         raw_time_col,
+        method_col,
+        status_col,
+        substatus_col,
+        uri_col,
+        query_col,
+        bytes_col,
+        user_agent_col,
+        referer_col,
+        detail_col,
     }
 }
 
@@ -2359,35 +2584,38 @@ pub fn extract_correlated_events_for_rows(
         }
     }
 
-    let raw_time_sql = resolved
-        .raw_time_col
-        .as_ref()
-        .map(|c| format!(", r.{}", db::quote_ident(c)))
-        .unwrap_or_default();
-    let user_sql = resolved
-        .user_col
-        .as_ref()
-        .map(|c| format!(", r.{}", db::quote_ident(c)))
-        .unwrap_or_default();
-    let host_sql = resolved
-        .host_col
-        .as_ref()
-        .map(|c| format!(", r.{}", db::quote_ident(c)))
-        .unwrap_or_default();
-    let ip_sql = resolved
-        .ip_col
-        .as_ref()
-        .map(|c| format!(", r.{}", db::quote_ident(c)))
-        .unwrap_or_default();
-    let action_sql = resolved
-        .action_col
-        .as_ref()
-        .map(|c| format!(", r.{}", db::quote_ident(c)))
-        .unwrap_or_default();
+    // Build ordered list of unique columns to query
+    let mut selected_cols: Vec<String> = Vec::new();
+    let mut add_col = |col_opt: &Option<String>| {
+        if let Some(ref c) = col_opt {
+            if !selected_cols.contains(c) {
+                selected_cols.push(c.clone());
+            }
+        }
+    };
+    add_col(&resolved.raw_time_col);
+    add_col(&resolved.user_col);
+    add_col(&resolved.host_col);
+    add_col(&resolved.ip_col);
+    add_col(&resolved.action_col);
+    add_col(&resolved.method_col);
+    add_col(&resolved.status_col);
+    add_col(&resolved.substatus_col);
+    add_col(&resolved.uri_col);
+    add_col(&resolved.query_col);
+    add_col(&resolved.bytes_col);
+    add_col(&resolved.user_agent_col);
+    add_col(&resolved.referer_col);
+    add_col(&resolved.detail_col);
+
+    let mut select_sql = String::new();
+    for c in &selected_cols {
+        select_sql.push_str(&format!(", r.{}", db::quote_ident(c)));
+    }
 
     let query = if has_time {
         format!(
-            "SELECT r.row_num, rt.epoch_ms, rt.utc_text {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
+            "SELECT r.row_num, rt.epoch_ms, rt.utc_text {select_sql}
              FROM _timeline_temp t
              JOIN rows r ON r.row_num = t.row_num
              LEFT JOIN _row_time rt ON rt.row_num = r.row_num
@@ -2395,7 +2623,7 @@ pub fn extract_correlated_events_for_rows(
         )
     } else {
         format!(
-            "SELECT r.row_num, NULL, NULL {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
+            "SELECT r.row_num, NULL, NULL {select_sql}
              FROM _timeline_temp t
              JOIN rows r ON r.row_num = t.row_num
              ORDER BY r.row_num ASC"
@@ -2432,52 +2660,37 @@ pub fn extract_correlated_events_for_rows(
         }
     }
 
-    let mut col_offset = 3;
-    let raw_time_idx = if resolved.raw_time_col.is_some() {
-        let idx = col_offset;
-        col_offset += 1;
-        Some(idx)
-    } else {
-        None
-    };
-    let user_idx = if resolved.user_col.is_some() {
-        let idx = col_offset;
-        col_offset += 1;
-        Some(idx)
-    } else {
-        None
-    };
-    let host_idx = if resolved.host_col.is_some() {
-        let idx = col_offset;
-        col_offset += 1;
-        Some(idx)
-    } else {
-        None
-    };
-    let ip_idx = if resolved.ip_col.is_some() {
-        let idx = col_offset;
-        col_offset += 1;
-        Some(idx)
-    } else {
-        None
-    };
-    let action_idx = if resolved.action_col.is_some() {
-        let idx = col_offset;
-        Some(idx)
-    } else {
-        None
-    };
+    let mut col_idx_map: HashMap<String, usize> = HashMap::new();
+    for (idx, c) in selected_cols.iter().enumerate() {
+        col_idx_map.insert(c.clone(), 3 + idx);
+    }
 
     let mut events = Vec::new();
     if let Ok(mut stmt) = conn.prepare(&query) {
         let rows_res = stmt.query_map([], |r| {
             let epoch_ms: Option<i64> = r.get(1)?;
             let utc_text: Option<String> = r.get(2)?;
-            let raw_time = raw_time_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-            let user = user_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-            let host_raw = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-            let ip_raw = ip_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-            let action = action_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
+
+            let get_col = |col_opt: &Option<String>| -> Option<String> {
+                col_opt.as_ref().and_then(|c| {
+                    col_idx_map.get(c).and_then(|&idx| r.get::<_, Option<String>>(idx).ok().flatten())
+                })
+            };
+
+            let raw_time = get_col(&resolved.raw_time_col);
+            let user = get_col(&resolved.user_col);
+            let host_raw = get_col(&resolved.host_col);
+            let ip_raw = get_col(&resolved.ip_col);
+            let action_raw = get_col(&resolved.action_col);
+            let method = get_col(&resolved.method_col);
+            let status = get_col(&resolved.status_col);
+            let substatus = get_col(&resolved.substatus_col);
+            let uri = get_col(&resolved.uri_col);
+            let query_param = get_col(&resolved.query_col);
+            let bytes = get_col(&resolved.bytes_col);
+            let user_agent = get_col(&resolved.user_agent_col);
+            let referer = get_col(&resolved.referer_col);
+            let detail = get_col(&resolved.detail_col);
 
             let mut final_epoch = epoch_ms;
             let mut final_utc = utc_text;
@@ -2492,6 +2705,29 @@ pub fn extract_correlated_events_for_rows(
             }
             let host = format_combined_host_ip(host_raw.as_deref(), ip_raw.as_deref());
 
+            // Normalize action for HTTP / API / web requests (e.g., "POST /uploads/shell.php")
+            let action = match (method.as_deref(), uri.as_deref(), action_raw.as_deref()) {
+                (Some(m), Some(u), Some(a))
+                    if a.eq_ignore_ascii_case(m) || a == u || a == "event recorded" =>
+                {
+                    Some(format!("{m} {u}"))
+                }
+                (Some(m), Some(u), None) => Some(format!("{m} {u}")),
+                _ => action_raw,
+            };
+
+            let details = synthesize_event_details(
+                status.as_deref(),
+                method.as_deref(),
+                uri.as_deref(),
+                query_param.as_deref(),
+                bytes.as_deref(),
+                user_agent.as_deref(),
+                referer.as_deref(),
+                substatus.as_deref(),
+                detail.as_deref(),
+            );
+
             Ok((
                 r.get::<_, i64>(0)?,
                 final_epoch,
@@ -2499,6 +2735,7 @@ pub fn extract_correlated_events_for_rows(
                 user,
                 host,
                 action,
+                details,
             ))
         });
         if let Ok(rows) = rows_res {
@@ -2514,6 +2751,7 @@ pub fn extract_correlated_events_for_rows(
                     user: r.3,
                     host: r.4,
                     action: r.5,
+                    details: r.6,
                     mitre_tags: tags,
                 });
             }
@@ -2825,18 +3063,7 @@ pub fn multi_file_hunt(
 ) -> Result<AnalystAnswer> {
     let (topic_name, patterns) = resolve_hunt_patterns(ask_text);
 
-    struct CombinedHuntEvent {
-        row_num: i64,
-        file_name: String,
-        epoch_ms: Option<i64>,
-        utc_text: Option<String>,
-        user: Option<String>,
-        host: Option<String>,
-        action: Option<String>,
-        mitre_tags: Vec<String>,
-    }
-
-    let mut all_events: Vec<CombinedHuntEvent> = Vec::new();
+    let mut all_events: Vec<CorrelatedTimelineEvent> = Vec::new();
     let mut file_all_names: Vec<String> = Vec::new();
     let mut file_match_counts: HashMap<String, usize> = HashMap::new();
     let mut file_row_ids: HashMap<String, Vec<i64>> = HashMap::new();
@@ -2985,188 +3212,25 @@ pub fn multi_file_hunt(
             }
         }
 
-        let has_time = row_time_available(&conn).unwrap_or(false);
-        let roles = load_active_roles(&conn).unwrap_or_default();
-        let role_map: HashMap<String, String> = roles.into_iter().collect();
-        let resolved = resolve_timeline_columns(&columns, &role_map);
-
-        let _ = conn.execute(
-            "CREATE TEMP TABLE IF NOT EXISTS _timeline_temp (row_num INTEGER PRIMARY KEY)",
-            [],
+        let events = extract_correlated_events_for_rows(
+            &conn,
+            &columns,
+            &row_ids,
+            &file_name,
+            &target.path,
         );
-        let _ = conn.execute("DELETE FROM _timeline_temp", []);
-        if let Ok(mut insert_stmt) =
-            conn.prepare("INSERT OR IGNORE INTO _timeline_temp (row_num) VALUES (?1)")
-        {
-            for r in &row_ids {
-                let _ = insert_stmt.execute([r]);
-            }
-        }
-
-        let raw_time_sql = resolved
-            .raw_time_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-        let user_sql = resolved
-            .user_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-        let host_sql = resolved
-            .host_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-        let ip_sql = resolved
-            .ip_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-        let action_sql = resolved
-            .action_col
-            .as_ref()
-            .map(|c| format!(", r.{}", db::quote_ident(c)))
-            .unwrap_or_default();
-
-        let query = if has_time {
-            format!(
-                "SELECT r.row_num, rt.epoch_ms, rt.utc_text {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
-                 FROM _timeline_temp t
-                 JOIN rows r ON r.row_num = t.row_num
-                 LEFT JOIN _row_time rt ON rt.row_num = r.row_num
-                 ORDER BY COALESCE(rt.epoch_ms, 9223372036854775807) ASC, r.row_num ASC"
-            )
-        } else {
-            format!(
-                "SELECT r.row_num, NULL, NULL {raw_time_sql} {user_sql} {host_sql} {ip_sql} {action_sql}
-                 FROM _timeline_temp t
-                 JOIN rows r ON r.row_num = t.row_num
-                 ORDER BY r.row_num ASC"
-            )
-        };
-
-        let mut intel_map: HashMap<i64, Vec<String>> = HashMap::new();
-        if table_exists(&conn, "_intel_match").unwrap_or(false) {
-            let intel_query = "SELECT m.row_num, m.technique_id, m.technique_name
-                 FROM _intel_match m
-                 JOIN _timeline_temp t ON t.row_num = m.row_num
-                 ORDER BY m.score DESC";
-            let mut stmt = conn.prepare(intel_query);
-            if let Ok(ref mut s) = stmt {
-                if let Ok(rows) = s.query_map([], |r| {
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        r.get::<_, String>(1)?,
-                        r.get::<_, String>(2)?,
-                    ))
-                }) {
-                    for item in rows.flatten() {
-                        let entry = intel_map.entry(item.0).or_default();
-                        if entry.len() < 2 {
-                            entry.push(format!("{} {}", item.1, item.2));
-                        }
-                    }
+        for ev in events {
+            if let Some(ref u) = ev.user {
+                if !u.trim().is_empty() {
+                    file_users.entry(file_name.clone()).or_default().insert(u.clone());
                 }
             }
-        }
-
-        let mut col_offset = 3;
-        let raw_time_idx = if resolved.raw_time_col.is_some() {
-            let idx = col_offset;
-            col_offset += 1;
-            Some(idx)
-        } else {
-            None
-        };
-        let user_idx = if resolved.user_col.is_some() {
-            let idx = col_offset;
-            col_offset += 1;
-            Some(idx)
-        } else {
-            None
-        };
-        let host_idx = if resolved.host_col.is_some() {
-            let idx = col_offset;
-            col_offset += 1;
-            Some(idx)
-        } else {
-            None
-        };
-        let ip_idx = if resolved.ip_col.is_some() {
-            let idx = col_offset;
-            col_offset += 1;
-            Some(idx)
-        } else {
-            None
-        };
-        let action_idx = if resolved.action_col.is_some() {
-            let idx = col_offset;
-            Some(idx)
-        } else {
-            None
-        };
-
-        {
-            let mut stmt = conn.prepare(&query);
-            if let Ok(ref mut s) = stmt {
-                if let Ok(rows) = s.query_map([], |r| {
-                    let epoch_ms: Option<i64> = r.get(1)?;
-                    let utc_text: Option<String> = r.get(2)?;
-                    let raw_time = raw_time_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    let user = user_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    let host_raw = host_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    let ip_raw = ip_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-                    let action = action_idx.and_then(|idx| r.get::<_, Option<String>>(idx).ok().flatten());
-
-                    let mut final_epoch = epoch_ms;
-                    let mut final_utc = utc_text;
-                    if final_epoch.is_none() && raw_time.is_some() {
-                        let (fe, fu) = time::parse_flexible_timestamp(raw_time.as_ref().unwrap(), true);
-                        if fe.is_some() {
-                            final_epoch = fe;
-                        }
-                        if fu.is_some() {
-                            final_utc = fu;
-                        }
-                    }
-                    let host = format_combined_host_ip(host_raw.as_deref(), ip_raw.as_deref());
-
-                    Ok((
-                        r.get::<_, i64>(0)?,
-                        final_epoch,
-                        final_utc,
-                        user,
-                        host,
-                        action,
-                    ))
-                }) {
-                    for r in rows.flatten() {
-                        let row_num = r.0;
-                        let tags = intel_map.get(&row_num).cloned().unwrap_or_default();
-                        if let Some(ref u) = r.3 {
-                            if !u.trim().is_empty() {
-                                file_users.entry(file_name.clone()).or_default().insert(u.clone());
-                            }
-                        }
-                        if let Some(ref a) = r.5 {
-                            if !a.trim().is_empty() {
-                                *file_operations.entry(file_name.clone()).or_default().entry(a.clone()).or_insert(0) += 1;
-                            }
-                        }
-                        all_events.push(CombinedHuntEvent {
-                            row_num,
-                            file_name: file_name.clone(),
-                            epoch_ms: r.1,
-                            utc_text: r.2,
-                            user: r.3,
-                            host: r.4,
-                            action: r.5,
-                            mitre_tags: tags,
-                        });
-                    }
+            if let Some(ref a) = ev.action {
+                if !a.trim().is_empty() {
+                    *file_operations.entry(file_name.clone()).or_default().entry(a.clone()).or_insert(0) += 1;
                 }
             }
+            all_events.push(ev);
         }
     }
 
@@ -3326,6 +3390,7 @@ pub fn multi_file_hunt(
             user: e.user.clone(),
             host: e.host.clone(),
             action: e.action.clone(),
+            details: e.details.clone(),
             mitre_tags: e.mitre_tags.clone(),
         })
         .collect();
@@ -3816,6 +3881,148 @@ mod tests {
         let (epoch2, utc2) = time::parse_flexible_timestamp("2026-09-02T20:54:37", true);
         assert!(epoch2.is_some(), "Must parse naive 24hr timestamp");
         assert_eq!(utc2.as_deref(), Some("2026-09-02T20:54:37Z"));
+    }
+
+    #[test]
+    fn test_synthesize_event_details_and_http_status_badges() {
+        let details = synthesize_event_details(
+            Some("200"),
+            Some("POST"),
+            Some("/wp-content/uploads/shell.php"),
+            Some("cmd=whoami&action=upload"),
+            Some("5420"),
+            Some("curl/7.68.0"),
+            None,
+            None,
+            None,
+        ).expect("details must be synthesized");
+
+        assert!(details.contains("[200 OK]"), "Must format 200 OK status badge: {details}");
+        assert!(details.contains("method=POST"), "Must include method: {details}");
+        assert!(details.contains("path=/wp-content/uploads/shell.php"), "Must include path: {details}");
+        assert!(details.contains("query=cmd=whoami&action=upload"), "Must include query: {details}");
+        assert!(details.contains("bytes=5420"), "Must include bytes: {details}");
+        assert!(details.contains("agent=curl/7.68.0"), "Must include user agent: {details}");
+
+        // Substatus test (e.g., IIS 403.3 Unauthorized by ACL)
+        let substatus_details = synthesize_event_details(
+            Some("403"),
+            Some("POST"),
+            Some("/upload.aspx"),
+            None,
+            Some("230"),
+            None,
+            None,
+            Some("3"),
+            None,
+        ).expect("details must be synthesized");
+
+        assert!(substatus_details.contains("[403.3 Forbidden]"), "Must include IIS substatus: {substatus_details}");
+
+        // JSON detail test
+        let json_detail = synthesize_event_details(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some(r#"{"action":"file_write","target":"/var/www/html/c99.php","success":true}"#),
+        ).expect("json details must be synthesized");
+
+        assert!(json_detail.contains("action=file_write"), "Must parse json details: {json_detail}");
+        assert!(json_detail.contains("target=/var/www/html/c99.php"), "Must parse json target: {json_detail}");
+        assert!(json_detail.contains("success=true"), "Must parse json boolean: {json_detail}");
+    }
+
+    #[test]
+    fn test_extract_correlated_events_for_webshell_sitelog() {
+        let conn = Connection::open_in_memory().unwrap();
+        let cols = vec![
+            ColumnMeta {
+                sql_name: "cs_method".to_string(),
+                original_name: "cs-method".to_string(),
+                col_index: 0,
+                inferred_type: "text".to_string(),
+            },
+            ColumnMeta {
+                sql_name: "cs_uri_stem".to_string(),
+                original_name: "cs-uri-stem".to_string(),
+                col_index: 1,
+                inferred_type: "text".to_string(),
+            },
+            ColumnMeta {
+                sql_name: "cs_uri_query".to_string(),
+                original_name: "cs-uri-query".to_string(),
+                col_index: 2,
+                inferred_type: "text".to_string(),
+            },
+            ColumnMeta {
+                sql_name: "sc_status".to_string(),
+                original_name: "sc-status".to_string(),
+                col_index: 3,
+                inferred_type: "text".to_string(),
+            },
+            ColumnMeta {
+                sql_name: "sc_bytes".to_string(),
+                original_name: "sc-bytes".to_string(),
+                col_index: 4,
+                inferred_type: "text".to_string(),
+            },
+            ColumnMeta {
+                sql_name: "c_ip".to_string(),
+                original_name: "c-ip".to_string(),
+                col_index: 5,
+                inferred_type: "ip".to_string(),
+            },
+        ];
+
+        conn.execute_batch(
+            "CREATE TABLE rows (
+                row_num INTEGER PRIMARY KEY,
+                cs_method TEXT,
+                cs_uri_stem TEXT,
+                cs_uri_query TEXT,
+                sc_status TEXT,
+                sc_bytes TEXT,
+                c_ip TEXT
+            );
+            INSERT INTO rows VALUES (1, 'POST', '/wp-content/uploads/shell.php', 'cmd=whoami', '200', '4096', '192.168.1.50');
+            INSERT INTO rows VALUES (2, 'POST', '/wp-content/uploads/shell.php', '-', '403', '240', '192.168.1.50');
+            "
+        ).unwrap();
+
+        let events = extract_correlated_events_for_rows(
+            &conn,
+            &cols,
+            &[1, 2],
+            "access_log.csv",
+            "C:/logs/access_log.csv",
+        );
+
+        assert_eq!(events.len(), 2);
+
+        // Row 1: Webshell succeeded (200 OK)
+        let ev1 = &events[0];
+        assert_eq!(ev1.row_num, 1);
+        assert_eq!(ev1.action.as_deref(), Some("POST /wp-content/uploads/shell.php"));
+        assert_eq!(ev1.host.as_deref(), Some("192.168.1.50"));
+        let d1 = ev1.details.as_deref().expect("ev1 details must be present");
+        assert!(d1.contains("[200 OK]"), "ev1 must have 200 OK badge: {d1}");
+        assert!(d1.contains("path=/wp-content/uploads/shell.php"), "ev1 must have path: {d1}");
+        assert!(d1.contains("query=cmd=whoami"), "ev1 must have query: {d1}");
+        assert!(d1.contains("bytes=4096"), "ev1 must have bytes: {d1}");
+
+        // Row 2: Webshell blocked (403 Forbidden)
+        let ev2 = &events[1];
+        assert_eq!(ev2.row_num, 2);
+        assert_eq!(ev2.action.as_deref(), Some("POST /wp-content/uploads/shell.php"));
+        let d2 = ev2.details.as_deref().expect("ev2 details must be present");
+        assert!(d2.contains("[403 Forbidden]"), "ev2 must have 403 Forbidden badge: {d2}");
+        assert!(!d2.contains("query=-"), "ev2 must not display empty hyphen query: {d2}");
+        assert!(d2.contains("bytes=240"), "ev2 must have bytes: {d2}");
     }
 }
 

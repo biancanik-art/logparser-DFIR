@@ -1242,6 +1242,28 @@
     });
   }
 
+  function formatUnifiedDetails(val) {
+    if (!val || val === "—") return `<span style="color:var(--text-muted);">—</span>`;
+    const str = String(val);
+    const parts = str.includes(" | ") ? str.split(" | ") : [str];
+
+    const renderedParts = parts.map((part) => {
+      const p = part.trim();
+      const statusMatch = p.match(/^\[(?:Status\s+)?(\d{3})(?:[.\d\s\w-]+)?\]$/i);
+      if (statusMatch) {
+        const code = parseInt(statusMatch[1], 10);
+        let statusClass = "status-2xx";
+        if (code >= 300 && code < 400) statusClass = "status-3xx";
+        else if (code >= 400 && code < 500) statusClass = "status-4xx";
+        else if (code >= 500) statusClass = "status-5xx";
+        return `<span class="unified-status-badge ${statusClass}">${escapeHtml(p)}</span>`;
+      }
+      return `<span class="unified-param-item" title="${escapeHtml(p)}">${escapeHtml(p)}</span>`;
+    });
+
+    return `<div class="unified-details-cell">${renderedParts.join("")}</div>`;
+  }
+
   async function renderUnifiedCorrelatedGrid(events, label, targetScrollIndex = null) {
     if (!events || events.length === 0) {
       alert("No correlated events found to display.");
@@ -1279,6 +1301,7 @@
         user: ev.user || "—",
         host: ev.host || "—",
         action: ev.action || "—",
+        details: ev.details || ev.rawDetails || ev.raw_details || "—",
         mitreTags: Array.isArray(ev.mitreTags) ? ev.mitreTags : [],
       }));
 
@@ -1429,6 +1452,25 @@
         formatter(cell) {
           const val = cell.getValue();
           return `<span>${escapeHtml(val || "—")}</span>`;
+        },
+      },
+      {
+        title: "📋 Details / Parameters",
+        field: "details",
+        minWidth: 280,
+        headerSort: true,
+        visible: !hiddenColFields.has("details"),
+        headerClick(e, col) {
+          if (e && (e.ctrlKey || e.metaKey)) {
+            toggleColumnSelection(col.getField());
+            return;
+          }
+          if (e && e.altKey) {
+            hideColumn(col.getField());
+          }
+        },
+        formatter(cell) {
+          return formatUnifiedDetails(cell.getValue());
         },
       },
       {
@@ -1599,6 +1641,7 @@
             (data.user && data.user.toLowerCase().includes(term)) ||
             (data.host && data.host.toLowerCase().includes(term)) ||
             (data.action && data.action.toLowerCase().includes(term)) ||
+            (data.details && data.details.toLowerCase().includes(term)) ||
             (Array.isArray(data.mitreTags) && data.mitreTags.some((t) => t.toLowerCase().includes(term)))
           );
         });
@@ -1625,6 +1668,7 @@
         <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">User:</span> ${escapeHtml(rowData.user || "")}</div>
         <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Host:</span> ${escapeHtml(rowData.host || "")}</div>
         <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Action:</span> ${escapeHtml(rowData.action || "")}</div>
+        ${rowData.details && rowData.details !== "—" ? `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Details / Params:</span> <code>${escapeHtml(rowData.details)}</code></div>` : ""}
         ${Array.isArray(rowData.mitreTags) && rowData.mitreTags.length > 0 ? `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Tags:</span> ${rowData.mitreTags.map((t) => `<span class="cross-ioc-meta-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3);margin-right:3px;">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
       `;
     }
@@ -1759,6 +1803,7 @@
       user: (r.user === "—" ? null : r.user) ?? null,
       host: (r.host === "—" ? null : r.host) ?? null,
       action: (r.action === "—" ? null : r.action) ?? null,
+      details: (r.details === "—" ? null : r.details) ?? r.rawDetails ?? r.raw_details ?? null,
       mitreTags: Array.isArray(r.mitreTags)
         ? r.mitreTags
         : Array.isArray(r.mitre_tags)
@@ -1804,6 +1849,7 @@
         "User / Identity",
         "Host / IP",
         "Operation / Action",
+        "Details / Parameters",
         "MITRE / Threat Tags",
       ];
       const escapeCsvField = (f) => {
@@ -1826,6 +1872,7 @@
           ev.user || "",
           ev.host || "",
           ev.action || "",
+          (ev.details === "—" ? "" : ev.details) || ev.rawDetails || ev.raw_details || "",
           Array.isArray(ev.mitreTags) ? ev.mitreTags.join("; ") : "",
         ];
         lines.push(rowVals.map(escapeCsvField).join(","));
@@ -3394,6 +3441,7 @@
             (data.user && data.user.toLowerCase().includes(term)) ||
             (data.host && data.host.toLowerCase().includes(term)) ||
             (data.action && data.action.toLowerCase().includes(term)) ||
+            (data.details && data.details.toLowerCase().includes(term)) ||
             (Array.isArray(data.mitreTags) && data.mitreTags.some((t) => t.toLowerCase().includes(term)))
           );
         });
@@ -3465,6 +3513,7 @@
             (data.user && data.user.toLowerCase().includes(term)) ||
             (data.host && data.host.toLowerCase().includes(term)) ||
             (data.action && data.action.toLowerCase().includes(term)) ||
+            (data.details && data.details.toLowerCase().includes(term)) ||
             (Array.isArray(data.mitreTags) && data.mitreTags.some((t) => t.toLowerCase().includes(term)))
           );
         });

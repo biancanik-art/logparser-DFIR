@@ -1,6 +1,6 @@
 [package]
 name = "log-parser"
-version = "0.2.8"
+version = "0.2.9"
 description = "Fast offline DFIR log viewer and correlation workbench for large SIEM/EDR exports"
 authors = ["logparser-DFIR contributors"]
 edition = "2021"

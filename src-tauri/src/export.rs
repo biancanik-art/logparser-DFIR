@@ -511,6 +511,7 @@ pub fn export_unified_multisheet_xlsx(
                 "User / Identity",
                 "Host / IP",
                 "Operation / Action",
+                "Details / Parameters",
                 "MITRE / Threat Tags",
             ];
 
@@ -555,10 +556,15 @@ pub fn export_unified_multisheet_xlsx(
                     8,
                     crate::report::excel_safe_string(ev.action.as_deref().unwrap_or("")).as_ref(),
                 )?;
-                let tags_str = ev.mitre_tags.join("; ");
                 timeline_sheet.write_string(
                     excel_row,
                     9,
+                    crate::report::excel_safe_string(ev.details.as_deref().unwrap_or("")).as_ref(),
+                )?;
+                let tags_str = ev.mitre_tags.join("; ");
+                timeline_sheet.write_string(
+                    excel_row,
+                    10,
                     crate::report::excel_safe_string(&tags_str).as_ref(),
                 )?;
             }
@@ -573,7 +579,8 @@ pub fn export_unified_multisheet_xlsx(
             timeline_sheet.set_column_width(6, 25)?;
             timeline_sheet.set_column_width(7, 20)?;
             timeline_sheet.set_column_width(8, 35)?;
-            timeline_sheet.set_column_width(9, 35)?;
+            timeline_sheet.set_column_width(9, 45)?;
+            timeline_sheet.set_column_width(10, 35)?;
 
             // 2. Group events by participating file
             let mut participating_files: Vec<(String, String)> = Vec::new();
@@ -1331,6 +1338,7 @@ mod tests {
                 user: Some("user1@corp.local".to_string()),
                 host: None,
                 action: Some("UserLoggedIn".to_string()),
+                details: Some("[200 OK] | method=POST | path=/api/login".to_string()),
                 mitre_tags: vec!["T1078 Valid Accounts".to_string()],
             },
             CorrelatedTimelineEvent {
@@ -1342,6 +1350,7 @@ mod tests {
                 user: None,
                 host: Some("10.0.0.1".to_string()),
                 action: Some("ForwardRule".to_string()),
+                details: Some("query=rule=forward&dest=ext".to_string()),
                 mitre_tags: vec!["T1114.003 Email Forwarding".to_string()],
             },
         ];
@@ -1368,6 +1377,10 @@ mod tests {
         assert_eq!(tl_rows[0][1].to_string(), "Source File");
         assert_eq!(tl_rows[1][1].to_string(), "audit_auth.xlsx");
         assert_eq!(tl_rows[2][1].to_string(), "network_flow.csv");
+        assert_eq!(tl_rows[0][9].to_string(), "Details / Parameters");
+        assert_eq!(tl_rows[0][10].to_string(), "MITRE / Threat Tags");
+        assert_eq!(tl_rows[1][9].to_string(), "[200 OK] | method=POST | path=/api/login");
+        assert_eq!(tl_rows[2][9].to_string(), "query=rule=forward&dest=ext");
 
         // Check file 1 sheet (full raw columns)
         let f1_range = workbook.worksheet_range(&sheet_names[1]).unwrap();

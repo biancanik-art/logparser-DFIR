@@ -1566,7 +1566,8 @@ test("unified correlated grid export calls export_unified_multisheet_xlsx for xl
       utcText: "2026-03-09 11:21:40 UTC",
       user: "user_a@domain.local",
       host: "10.0.0.5",
-      action: "UserLoggedIn",
+      action: "POST /upload.php",
+      details: "[200 OK] | method=POST | path=/upload.php | query=cmd=whoami | bytes=5420",
       mitreTags: ["T1078 Valid Accounts"],
     },
     {
@@ -1578,6 +1579,7 @@ test("unified correlated grid export calls export_unified_multisheet_xlsx for xl
       user: "user_a@domain.local",
       host: "192.168.1.100",
       action: "New-InboxRule",
+      details: "rule=forward&dest=ext",
       mitreTags: ["T1114.003 Email Forwarding Rule"],
     },
   ];
@@ -1591,7 +1593,16 @@ test("unified correlated grid export calls export_unified_multisheet_xlsx for xl
   const exportCall = app.calls.find((c) => c.command === "export_unified_multisheet_xlsx");
   assert.ok(exportCall, "export_unified_multisheet_xlsx must be invoked");
   assert.equal(exportCall.args.events.length, 2);
+  assert.equal(exportCall.args.events[0].details, "[200 OK] | method=POST | path=/upload.php | query=cmd=whoami | bytes=5420");
   assert.equal(exportCall.args.destPath, "C:\\exports\\unified_multisheet.xlsx");
+
+  await app.debug.exportUnifiedCorrelatedDataForTest("csv");
+  await settleFrontend();
+
+  const csvCall = app.calls.find((c) => c.command === "export_text_file");
+  assert.ok(csvCall, "export_text_file must be invoked for CSV export");
+  assert.ok(csvCall.args.content.includes("Details / Parameters"), "CSV header must include Details / Parameters");
+  assert.ok(csvCall.args.content.includes("[200 OK] | method=POST"), "CSV row must include details value");
 });
 
 test("unified correlated grid row jump preserves context and allows instant return to initial position", async () => {
