@@ -68,14 +68,22 @@ pub struct AnalystSection {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CorrelatedTimelineEvent {
+    #[serde(alias = "fileName", alias = "file_name")]
     pub file_name: String,
     pub path: String,
+    #[serde(alias = "rowNum", alias = "row_num")]
     pub row_num: i64,
+    #[serde(default, alias = "epochMs", alias = "epoch_ms")]
     pub epoch_ms: Option<i64>,
+    #[serde(default, alias = "utcText", alias = "utc_text")]
     pub utc_text: Option<String>,
+    #[serde(default)]
     pub user: Option<String>,
+    #[serde(default)]
     pub host: Option<String>,
+    #[serde(default)]
     pub action: Option<String>,
+    #[serde(default, alias = "mitreTags", alias = "mitre_tags")]
     pub mitre_tags: Vec<String>,
 }
 
@@ -2396,7 +2404,7 @@ pub fn extract_correlated_events_for_rows(
 
     let mut intel_map: HashMap<i64, Vec<String>> = HashMap::new();
     if table_exists(conn, "_intel_match").unwrap_or(false) {
-        let intel_query = "SELECT m.row_num, m.technique_id, m.technique_name
+        let intel_query = "SELECT m.row_num, m.technique_id, m.technique_name, COALESCE(m.tactic_name, '')
              FROM _intel_match m
              JOIN _timeline_temp t ON t.row_num = m.row_num
              ORDER BY m.score DESC";
@@ -2407,12 +2415,17 @@ pub fn extract_correlated_events_for_rows(
                     r.get::<_, i64>(0)?,
                     r.get::<_, String>(1)?,
                     r.get::<_, String>(2)?,
+                    r.get::<_, String>(3)?,
                 ))
             }) {
                 for item in rows.flatten() {
                     let entry = intel_map.entry(item.0).or_default();
-                    if entry.len() < 2 {
-                        entry.push(format!("{} {}", item.1, item.2));
+                    if entry.len() < 3 {
+                        if !item.3.is_empty() {
+                            entry.push(format!("{} {} [{}]", item.1, item.2, item.3));
+                        } else {
+                            entry.push(format!("{} {}", item.1, item.2));
+                        }
                     }
                 }
             }

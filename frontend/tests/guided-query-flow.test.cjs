@@ -437,6 +437,19 @@ function bootApp({ commandHandlers = {} } = {}) {
     run_guided_query: async () => page([EVIDENCE_ROW]),
     set_guided_parse_decision: async () => null,
     "plugin:dialog|save": async () => "C:\\exports\\unified_multisheet.xlsx",
+    batch_ensure_cached: async (args) => {
+      return (args.files || []).map((f) => ({
+        path: f.path,
+        sheet: f.sheet || "Sheet1",
+        file_name: f.path.split(/[\\/]/).pop(),
+        row_count: 50,
+        columns: [{ originalName: "Raw", sqlName: "raw" }],
+        cache_db_path: `${f.path}.db`,
+        from_cache: false,
+        warning: null,
+        error: null,
+      }));
+    },
     export_unified_multisheet_xlsx: async () => ({
       sheetsWritten: ["Unified Timeline", "activity_log_a", "activity_log_b"],
       totalEvents: 2,
@@ -454,6 +467,24 @@ function bootApp({ commandHandlers = {} } = {}) {
     }),
   };
 
+  const eventListeners = new Map();
+  const listen = async (eventName, callback) => {
+    if (!eventListeners.has(eventName)) {
+      eventListeners.set(eventName, []);
+    }
+    eventListeners.get(eventName).push(callback);
+    return () => {
+      const arr = eventListeners.get(eventName) || [];
+      const idx = arr.indexOf(callback);
+      if (idx !== -1) arr.splice(idx, 1);
+    };
+  };
+
+  const emitEvent = (eventName, payload) => {
+    const arr = eventListeners.get(eventName) || [];
+    arr.forEach((cb) => cb({ payload }));
+  };
+
   const invoke = async (command, args = {}) => {
     calls.push({ command, args });
     const handler = commandHandlers[command] || defaults[command];
@@ -464,7 +495,7 @@ function bootApp({ commandHandlers = {} } = {}) {
   const window = {
     __TAURI__: {
       core: { invoke },
-      event: { listen: async () => () => {} },
+      event: { listen },
     },
     __logParserDebug: {},
     confirm: () => true,
@@ -492,7 +523,7 @@ function bootApp({ commandHandlers = {} } = {}) {
   };
 
   vm.runInNewContext(APP_SOURCE, sandbox, { filename: APP_PATH });
-  return { calls, debug: window.__logParserDebug, document };
+  return { calls, debug: window.__logParserDebug, document, emitEvent };
 }
 
 async function settleFrontend(turns = 8) {
@@ -1735,5 +1766,157 @@ test("shortcuts modal opens and closes correctly via button and escape", async (
 
   assert.equal(modal.classList.contains("hidden"), true);
   assert.equal(backdrop.classList.contains("hidden"), true);
+});
+
+test("getActiveDataset returns active dataset metadata with cacheDbPath and warning", async () => {
+  const app = bootApp();
+  await loadFixture(app);
+
+  const dataset = app.debug.getActiveDatasetForTest();
+  assert.equal(dataset.path, "C:\\fixtures\\events.csv");
+  assert.equal(dataset.sheet, "events");
+  assert.equal(dataset.rowCount, 1);
+  assert.equal(Array.isArray(dataset.columns), true);
+});
+
+test("batchEnsureCached invokes batch_ensure_cached and populates loadedFiles metadata", async () => {
+  const app = bootApp({
+    commandHandlers: {
+      batch_ensure_cached: async (args) => {
+        return (args.files || []).map((f) => ({
+          path: f.path,
+          sheet: "Sheet1",
+          file_name: f.path.split(/[\\/]/).pop(),
+          row_count: 120,
+          columns: [{ originalName: "Raw", sqlName: "raw" }],
+          cache_db_path: `C:\\cache\\${f.path.split(/[\\/]/).pop()}.db`,
+          from_cache: false,
+          warning: "Synthetic columns assigned (Column 1)",
+          error: null,
+        }));
+      },
+    },
+  });
+  await loadFixture(app);
+
+  const testPaths = ["C:\\evidence\\log1.csv", "C:\\evidence\\log2.csv"];
+  // Seed loaded files
+  const loaded = app.debug.getLoadedFilesForTest();
+  testPaths.forEach((p) => {
+    loaded.push({ path: p, sheet: null, name: p.split(/[\\/]/).pop(), rowCount: null });
+  });
+
+  const results = await app.debug.batchEnsureCachedForTest(testPaths);
+  await settleFrontend();
+
+  assert.equal(results.length, 2);
+  assert.equal(results[0].row_count, 120);
+  assert.equal(results[0].warning, "Synthetic columns assigned (Column 1)");
+
+  const entry1 = loaded.find((f) => f.path === "C:\\evidence\\log1.csv");
+  assert.ok(entry1);
+  assert.equal(entry1.rowCount, 120);
+  assert.equal(entry1.cacheDbPath, "C:\\cache\\log1.csv.db");
+  assert.equal(entry1.warning, "Synthetic columns assigned (Column 1)");
+});
+
+test("batch-cache-progress listener dynamically updates file status and row count", async () => {
+  const app = bootApp();
+  await loadFixture(app);
+
+  const loaded = app.debug.getLoadedFilesForTest();
+  loaded.push({
+    path: "C:\\evidence\\background.csv",
+    sheet: null,
+    name: "background.csv",
+    rowCount: null,
+    indexing: true,
+  });
+
+  app.emitEvent("batch-cache-progress", {
+    path: "C:\\evidence\\background.csv",
+    row_count: 9999,
+    error: null,
+  });
+  await settleFrontend();
+
+  const entry = loaded.find((f) => f.path === "C:\\evidence\\background.csv");
+  assert.ok(entry);
+  assert.equal(entry.rowCount, 9999);
+  assert.equal(entry.indexing, false);
+});
+
+test("filterGridByIntel routes multi-file threat hits to unified correlated grid", async () => {
+  const app = bootApp();
+  await loadFixture(app);
+
+  // Set up multi-file intel scan summary result
+  app.debug.setIntelScanSummaryResultForTest({
+    correlatedEvents: [
+      {
+        fileName: "file_a.xlsx",
+        path: "C:\\data\\file_a.xlsx",
+        rowNum: 5,
+        mitreTags: ["Credential Access: T1110 Brute Force"],
+      },
+      {
+        fileName: "file_b.csv",
+        path: "C:\\data\\file_b.csv",
+        rowNum: 18,
+        mitreTags: ["Credential Access: T1110 Brute Force"],
+      },
+    ],
+  });
+
+  await app.debug.filterGridByIntelForTest("technique", "T1110", "Technique: T1110");
+  await settleFrontend();
+
+  assert.equal(app.debug.isUnifiedCorrelatedModeForTest(), true);
+  const rows = app.debug.getUnifiedCorrelatedRowsForTest();
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].path, "C:\\data\\file_a.xlsx");
+  assert.equal(rows[1].path, "C:\\data\\file_b.csv");
+});
+
+test("filterGridByIntel switches file when threat hits belong to another single loaded file", async () => {
+  let switchedTo = null;
+  const app = bootApp({
+    commandHandlers: {
+      import_sheet: async (args) => {
+        switchedTo = args.path;
+        return {
+          rowCount: 42,
+          fromCache: false,
+          columns: [{ originalName: "Raw", sqlName: "raw" }],
+        };
+      },
+    },
+  });
+  await loadFixture(app);
+
+  const loaded = app.debug.getLoadedFilesForTest();
+  loaded.push({
+    path: "C:\\data\\other_file.csv",
+    sheet: "other_file",
+    name: "other_file.csv",
+    rowCount: 42,
+  });
+
+  app.debug.setIntelScanSummaryResultForTest({
+    correlatedEvents: [
+      {
+        fileName: "other_file.csv",
+        path: "C:\\data\\other_file.csv",
+        rowNum: 7,
+        mitreTags: ["Persistence: T1078 Valid Accounts"],
+      },
+    ],
+  });
+
+  await app.debug.filterGridByIntelForTest("technique", "T1078", "Technique: T1078");
+  await settleFrontend();
+
+  // Single file hits should switch to that file
+  assert.equal(switchedTo, "C:\\data\\other_file.csv");
 });
 

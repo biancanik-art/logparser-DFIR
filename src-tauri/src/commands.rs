@@ -183,6 +183,8 @@ pub struct ImportSummary {
     pub elapsed_ms: u128,
     pub from_cache: bool,
     pub released_ai_memory: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -775,13 +777,13 @@ async fn import_sheet_locked(
     let sheet_for_task = sheet.clone();
     let db_path_for_task = db_path.clone();
 
-    let (columns, row_count, from_cache) = tauri::async_runtime::spawn_blocking(
-        move || -> Result<(Vec<ColumnMeta>, i64, bool), String> {
+    let (columns, row_count, from_cache, warning) = tauri::async_runtime::spawn_blocking(
+        move || -> Result<(Vec<ColumnMeta>, i64, bool, Option<String>), String> {
             if db_path_for_task.exists() {
                 match open_existing_cache_for_import(&db_path_for_task) {
                     Ok(conn) => match load_existing_cache_metadata_for_import(&conn) {
                         Ok((columns, info)) if info.sheet_name == sheet_for_task => {
-                            return Ok((columns, info.row_count, true));
+                            return Ok((columns, info.row_count, true, None));
                         }
                         Ok(_) | Err(ImportCacheOpenError::Reimportable) => {}
                         Err(ImportCacheOpenError::Preserved(message)) => return Err(message),
@@ -852,7 +854,7 @@ async fn import_sheet_locked(
             let _ = std::fs::remove_file(&db_path_for_task);
             std::fs::rename(&tmp_db_path, &db_path_for_task).map_err(|e| e.to_string())?;
 
-            Ok((import_result.columns, import_result.row_count, false))
+            Ok((import_result.columns, import_result.row_count, false, import_result.warning))
         },
     )
     .await
@@ -882,6 +884,7 @@ async fn import_sheet_locked(
         elapsed_ms: start.elapsed().as_millis(),
         from_cache,
         released_ai_memory: false,
+        warning,
     })
 }
 
@@ -1943,6 +1946,279 @@ pub struct CrossFileSearchResult {
     pub match_count: i64,
     pub snippets: Vec<CrossFileSnippet>,
     pub error: Option<String>,
+}
+
+#[derive(Serialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchCacheResult {
+    pub path: String,
+    pub sheet: Option<String>,
+    pub file_name: String,
+    pub row_count: i64,
+    pub columns: Vec<ColumnMeta>,
+    pub cache_db_path: String,
+    pub from_cache: bool,
+    pub warning: Option<String>,
+    pub error: Option<String>,
+}
+
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+struct BatchCacheProgressPayload {
+    index: usize,
+    total: usize,
+    path: String,
+    file_name: String,
+    row_count: i64,
+    error: Option<String>,
+}
+
+#[tauri::command]
+pub async fn batch_ensure_cached(
+    app: AppHandle,
+    files: Vec<FileTarget>,
+) -> Result<Vec<BatchCacheResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let total = files.len();
+        let mut results = Vec::with_capacity(total);
+
+        for (idx, target) in files.into_iter().enumerate() {
+            let file_name = Path::new(&target.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| target.path.clone());
+
+            let sheet_name = if let Some(ref s) = target.sheet {
+                if !s.is_empty() {
+                    s.clone()
+                } else {
+                    match tabular_import::list_sheet_names(Path::new(&target.path)) {
+                        Ok(sheets) => sheets.into_iter().next().unwrap_or_else(|| "Sheet1".to_string()),
+                        Err(e) => {
+                            let res = BatchCacheResult {
+                                path: target.path.clone(),
+                                sheet: None,
+                                file_name: file_name.clone(),
+                                row_count: 0,
+                                columns: Vec::new(),
+                                cache_db_path: String::new(),
+                                from_cache: false,
+                                warning: None,
+                                error: Some(format!("Could not read sheets: {e}")),
+                            };
+                            let _ = app.emit(
+                                "batch-cache-progress",
+                                BatchCacheProgressPayload {
+                                    index: idx + 1,
+                                    total,
+                                    path: target.path,
+                                    file_name,
+                                    row_count: 0,
+                                    error: res.error.clone(),
+                                },
+                            );
+                            results.push(res);
+                            continue;
+                        }
+                    }
+                }
+            } else {
+                match tabular_import::list_sheet_names(Path::new(&target.path)) {
+                    Ok(sheets) => sheets.into_iter().next().unwrap_or_else(|| "Sheet1".to_string()),
+                    Err(e) => {
+                        let res = BatchCacheResult {
+                            path: target.path.clone(),
+                            sheet: None,
+                            file_name: file_name.clone(),
+                            row_count: 0,
+                            columns: Vec::new(),
+                            cache_db_path: String::new(),
+                            from_cache: false,
+                            warning: None,
+                            error: Some(format!("Could not read sheets: {e}")),
+                        };
+                        let _ = app.emit(
+                            "batch-cache-progress",
+                            BatchCacheProgressPayload {
+                                index: idx + 1,
+                                total,
+                                path: target.path,
+                                file_name,
+                                row_count: 0,
+                                error: res.error.clone(),
+                            },
+                        );
+                        results.push(res);
+                        continue;
+                    }
+                }
+            };
+
+            let db_path = match db::cache_db_path(Path::new(&target.path), &sheet_name) {
+                Ok(p) => p,
+                Err(e) => {
+                    let res = BatchCacheResult {
+                        path: target.path.clone(),
+                        sheet: Some(sheet_name),
+                        file_name: file_name.clone(),
+                        row_count: 0,
+                        columns: Vec::new(),
+                        cache_db_path: String::new(),
+                        from_cache: false,
+                        warning: None,
+                        error: Some(format!("Could not determine cache path: {e}")),
+                    };
+                    let _ = app.emit(
+                        "batch-cache-progress",
+                        BatchCacheProgressPayload {
+                            index: idx + 1,
+                            total,
+                            path: target.path,
+                            file_name,
+                            row_count: 0,
+                            error: res.error.clone(),
+                        },
+                    );
+                    results.push(res);
+                    continue;
+                }
+            };
+
+            // Check if existing cache is usable
+            if db_path.exists() {
+                if let Ok(conn) = open_existing_cache_for_import(&db_path) {
+                    if let Ok((columns, info)) = load_existing_cache_metadata_for_import(&conn) {
+                        if info.sheet_name == sheet_name {
+                            let res = BatchCacheResult {
+                                path: target.path.clone(),
+                                sheet: Some(sheet_name),
+                                file_name: file_name.clone(),
+                                row_count: info.row_count,
+                                columns,
+                                cache_db_path: db_path.display().to_string(),
+                                from_cache: true,
+                                warning: None,
+                                error: None,
+                            };
+                            let _ = app.emit(
+                                "batch-cache-progress",
+                                BatchCacheProgressPayload {
+                                    index: idx + 1,
+                                    total,
+                                    path: target.path,
+                                    file_name,
+                                    row_count: info.row_count,
+                                    error: None,
+                                },
+                            );
+                            results.push(res);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // Ingest file into cache
+            let tmp_db_path = PathBuf::from(format!("{}.tmp", db_path.display()));
+            let _ = std::fs::remove_file(&tmp_db_path);
+
+            let import_outcome = tabular_import::import_into_db(
+                Path::new(&target.path),
+                &sheet_name,
+                &tmp_db_path,
+                |_, _| {},
+            );
+
+            let res = match import_outcome {
+                Ok(import_result) => {
+                    let record_result = db::open(&tmp_db_path).and_then(|conn| {
+                        db::record_import_info(
+                            &conn,
+                            &ImportInfo {
+                                source_path: target.path.clone(),
+                                sheet_name: sheet_name.clone(),
+                                row_count: import_result.row_count,
+                                imported_at: now_marker(),
+                            },
+                        )
+                    });
+
+                    if let Err(e) = record_result {
+                        let _ = std::fs::remove_file(&tmp_db_path);
+                        BatchCacheResult {
+                            path: target.path.clone(),
+                            sheet: Some(sheet_name),
+                            file_name: file_name.clone(),
+                            row_count: 0,
+                            columns: Vec::new(),
+                            cache_db_path: String::new(),
+                            from_cache: false,
+                            warning: None,
+                            error: Some(format!("Failed to record metadata: {e}")),
+                        }
+                    } else {
+                        let _ = std::fs::remove_file(&db_path);
+                        if let Err(e) = std::fs::rename(&tmp_db_path, &db_path) {
+                            BatchCacheResult {
+                                path: target.path.clone(),
+                                sheet: Some(sheet_name),
+                                file_name: file_name.clone(),
+                                row_count: 0,
+                                columns: Vec::new(),
+                                cache_db_path: String::new(),
+                                from_cache: false,
+                                warning: None,
+                                error: Some(format!("Failed to finalize cache: {e}")),
+                            }
+                        } else {
+                            BatchCacheResult {
+                                path: target.path.clone(),
+                                sheet: Some(sheet_name),
+                                file_name: file_name.clone(),
+                                row_count: import_result.row_count,
+                                columns: import_result.columns,
+                                cache_db_path: db_path.display().to_string(),
+                                from_cache: false,
+                                warning: import_result.warning,
+                                error: None,
+                            }
+                        }
+                    }
+                }
+                Err(err) => {
+                    let _ = std::fs::remove_file(&tmp_db_path);
+                    BatchCacheResult {
+                        path: target.path.clone(),
+                        sheet: Some(sheet_name),
+                        file_name: file_name.clone(),
+                        row_count: 0,
+                        columns: Vec::new(),
+                        cache_db_path: String::new(),
+                        from_cache: false,
+                        warning: None,
+                        error: Some(err.to_string()),
+                    }
+                }
+            };
+
+            let _ = app.emit(
+                "batch-cache-progress",
+                BatchCacheProgressPayload {
+                    index: idx + 1,
+                    total,
+                    path: target.path,
+                    file_name,
+                    row_count: res.row_count,
+                    error: res.error.clone(),
+                },
+            );
+            results.push(res);
+        }
+
+        Ok(results)
+    })
+    .await
+    .map_err(|e| format!("batch cache task join error: {e}"))?
 }
 
 #[tauri::command]

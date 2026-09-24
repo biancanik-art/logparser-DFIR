@@ -187,6 +187,29 @@
   let loadedFiles = []; // array of { path, sheet, name, rowCount, columns, summary }
   let activeFileIndex = -1;
 
+  function getActiveDataset() {
+    const activeEntry =
+      (activeFileIndex >= 0 && loadedFiles[activeFileIndex]) ||
+      loadedFiles.find((f) => f.path === currentPath) ||
+      null;
+    return {
+      path: currentPath || activeEntry?.path || null,
+      sheet: currentSheet || activeEntry?.sheet || null,
+      cacheDbPath:
+        activeEntry?.cacheDbPath ||
+        activeEntry?.summary?.cacheDbPath ||
+        null,
+      name:
+        activeEntry?.name ||
+        (currentPath ? currentPath.split(/[\\/]/).pop() : "Evidence"),
+      rowCount: activeEntry?.rowCount ?? null,
+      columns: activeEntry?.columns || columns || [],
+      summary: activeEntry?.summary || null,
+      warning: activeEntry?.warning || activeEntry?.summary?.warning || null,
+      error: activeEntry?.error || null,
+    };
+  }
+
   // Cross-file correlation state
   let crossIocSummary = null;
   let crossIocActiveFilter = "overlap"; // "overlap" or "all"
@@ -1112,6 +1135,43 @@
 
   async function filterGridByIntel(filterType, filterValue, displayName) {
     if (sheetLoadInFlight || tableTransitionInFlight()) return null;
+
+    if (filterType === "technique" || filterType === "tactic" || filterType === "all") {
+      const allEvents = intelScanSummaryResult?.correlatedEvents || [];
+      let matchingEvents = allEvents;
+      if (filterType === "technique") {
+        const term = String(filterValue).toLowerCase();
+        matchingEvents = allEvents.filter((e) => {
+          const tags = (e.mitreTags || []).join(" ").toLowerCase();
+          return tags.includes(term);
+        });
+      } else if (filterType === "tactic") {
+        const term = String(filterValue).toLowerCase();
+        matchingEvents = allEvents.filter((e) => {
+          const tags = (e.mitreTags || []).join(" ").toLowerCase();
+          return tags.includes(term);
+        });
+      }
+
+      const participatingFiles = [...new Set(matchingEvents.map((e) => e.path))];
+
+      // If matches span multiple files, render unified correlated grid so all hits are visible across files
+      if (participatingFiles.length > 1) {
+        return renderUnifiedCorrelatedGrid(
+          matchingEvents,
+          displayName || `MITRE ${filterType}: ${filterValue} (${matchingEvents.length} events across ${participatingFiles.length} files)`
+        );
+      }
+
+      // If matches belong to exactly one file that is not the current active file, switch to it first
+      if (participatingFiles.length === 1 && participatingFiles[0] !== currentPath) {
+        const targetIdx = loadedFiles.findIndex((f) => f.path === participatingFiles[0]);
+        if (targetIdx !== -1) {
+          await switchLoadedFile(targetIdx);
+        }
+      }
+    }
+
     discardGuidedPlanForTableAction();
     queryMode = "normal";
     activeEvidenceQuery = null;
@@ -1210,6 +1270,7 @@
       .map((ev, idx) => ({
         id: idx + 1,
         _unifiedIndex: idx + 1,
+        rowNum: ev.rowNum,
         row_num: ev.rowNum,
         fileName: ev.fileName || (ev.path ? ev.path.split(/[\\/]/).pop() : "File"),
         path: ev.path,
@@ -1581,7 +1642,7 @@
         target: {
           path: rowData.path,
           sheet: targetFile?.sheet || null,
-          cacheDbPath: targetFile?.cacheDbPath || null,
+          cacheDbPath: targetFile?.cacheDbPath || targetFile?.summary?.cacheDbPath || null,
         },
         rowNum,
       });
@@ -1689,17 +1750,33 @@
       } catch (_) {}
     }
 
+    const normalizedEvents = (rowsToExport || []).map((r) => ({
+      fileName: r.fileName || r.file_name || (r.path ? r.path.split(/[\\/]/).pop() : "File"),
+      path: r.path || "",
+      rowNum: Number(r.rowNum ?? r.row_num ?? 0),
+      epochMs: r.epochMs ?? r.epoch_ms ?? null,
+      utcText: (r.utcText === "—" ? null : r.utcText) ?? r.utc_text ?? null,
+      user: (r.user === "—" ? null : r.user) ?? null,
+      host: (r.host === "—" ? null : r.host) ?? null,
+      action: (r.action === "—" ? null : r.action) ?? null,
+      mitreTags: Array.isArray(r.mitreTags)
+        ? r.mitreTags
+        : Array.isArray(r.mitre_tags)
+        ? r.mitre_tags
+        : [],
+    }));
+
     if (format === "xlsx") {
       showProgress("Generating multi-sheet forensic Excel workbook…", 0.3);
       try {
         const fileTargets = (loadedFiles || []).map((f) => ({
           path: f.path,
           sheet: f.sheet || null,
-          cacheDbPath: f.cacheDbPath || null,
+          cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
         }));
         const summary = await invoke("export_unified_multisheet_xlsx", {
           files: fileTargets,
-          events: rowsToExport,
+          events: normalizedEvents,
           destPath,
         });
         hideProgress();
@@ -3953,15 +4030,16 @@
         const filesPayload = loadedFiles.map((f) => ({
           path: f.path,
           sheet: f.sheet || null,
-          cacheDbPath: f.cacheDbPath || null,
+          cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
         }));
         summary = await invoke("scan_all_files_intel_matches", { files: filesPayload, includeBec });
       } else {
-        if (currentPath) {
+        const active = getActiveDataset();
+        if (active.path) {
           const filesPayload = [{
-            path: currentPath,
-            sheet: currentSheet || null,
-            cacheDbPath: currentCacheDbPath || null,
+            path: active.path,
+            sheet: active.sheet || null,
+            cacheDbPath: active.cacheDbPath || null,
           }];
           summary = await invoke("scan_all_files_intel_matches", { files: filesPayload, includeBec });
         } else {
@@ -4417,13 +4495,28 @@
       }
 
       // Track all picked files
-      paths.forEach((p) => {
+      paths.forEach((p, idx) => {
         const name = p.split(/[\\/]/).pop();
         if (!loadedFiles.some((f) => f.path === p)) {
-          loadedFiles.push({ path: p, sheet: null, name, rowCount: null });
+          loadedFiles.push({
+            path: p,
+            sheet: null,
+            name,
+            rowCount: null,
+            cacheDbPath: null,
+            indexing: paths.length > 1 && idx > 0,
+          });
         }
       });
       updateFileSwitcherUi();
+      renderCorrelationScope();
+
+      // In background, ensure non-first files are indexed and cached
+      if (paths.length > 1) {
+        batchEnsureCached(paths.slice(1)).catch((err) => {
+          console.error("batchEnsureCached error", err);
+        });
+      }
 
       const targetPath = paths[0];
       sourceRequest = {
@@ -4465,6 +4558,70 @@
     }
   }
 
+  let batchCachingInFlight = false;
+
+  async function batchEnsureCached(filePaths) {
+    if (!Array.isArray(filePaths) || filePaths.length === 0) return [];
+
+    const targets = [];
+    for (const p of filePaths) {
+      const existing = loadedFiles.find((f) => f.path === p);
+      if (!existing || !existing.cacheDbPath) {
+        targets.push({
+          path: p,
+          sheet: existing?.sheet || null,
+          cacheDbPath: null,
+        });
+        if (existing) {
+          existing.indexing = true;
+        }
+      }
+    }
+
+    if (targets.length === 0) return [];
+
+    updateFileSwitcherUi();
+    renderCorrelationScope();
+    batchCachingInFlight = true;
+
+    try {
+      const results = await invoke("batch_ensure_cached", { files: targets });
+      if (Array.isArray(results)) {
+        results.forEach((res) => {
+          const entry = loadedFiles.find((f) => f.path === res.path);
+          if (entry) {
+            entry.indexing = false;
+            if (res.sheet && !entry.sheet) entry.sheet = res.sheet;
+            const rowCount = res.rowCount ?? res.row_count;
+            if (rowCount != null && rowCount > 0) entry.rowCount = rowCount;
+            if (res.columns && res.columns.length > 0) entry.columns = res.columns;
+            const cacheDbPath = res.cacheDbPath ?? res.cache_db_path;
+            if (cacheDbPath) entry.cacheDbPath = cacheDbPath;
+            if (res.warning) entry.warning = res.warning;
+            if (res.error) entry.error = res.error;
+          }
+        });
+      }
+      updateFileSwitcherUi();
+      renderCorrelationScope();
+      return results;
+    } catch (err) {
+      console.error("batch_ensure_cached failed", err);
+      targets.forEach((t) => {
+        const entry = loadedFiles.find((f) => f.path === t.path);
+        if (entry) {
+          entry.indexing = false;
+          entry.error = String(err);
+        }
+      });
+      updateFileSwitcherUi();
+      renderCorrelationScope();
+      return [];
+    } finally {
+      batchCachingInFlight = false;
+    }
+  }
+
   function updateFileSwitcherUi() {
     if (!fileSwitcher || !fileSwitcherWrap) return;
     if (loadedFiles.length > 1) {
@@ -4473,9 +4630,17 @@
       loadedFiles.forEach((file, idx) => {
         const opt = document.createElement("option");
         opt.value = String(idx);
+        let statusBadge = "";
+        if (file.indexing) {
+          statusBadge = " ⏳ (indexing...)";
+        } else if (file.error) {
+          statusBadge = " ⚠️ (failed)";
+        } else if (file.warning) {
+          statusBadge = " ⚠️";
+        }
         opt.textContent = file.rowCount != null
-          ? `${file.name} (${file.rowCount.toLocaleString()} rows)`
-          : file.name;
+          ? `${file.name} (${file.rowCount.toLocaleString()} rows)${statusBadge}`
+          : `${file.name}${statusBadge}`;
         if (file.path === currentPath) {
           opt.selected = true;
           activeFileIndex = idx;
@@ -5104,7 +5269,11 @@
       existingEntry.sheet = importedSheet;
       existingEntry.rowCount = summary.rowCount;
       existingEntry.columns = summary.columns;
+      existingEntry.cacheDbPath = summary.cacheDbPath || existingEntry.cacheDbPath;
+      existingEntry.warning = summary.warning || existingEntry.warning;
       existingEntry.summary = summary;
+      existingEntry.indexing = false;
+      existingEntry.error = null;
       activeFileIndex = loadedFiles.indexOf(existingEntry);
     } else {
       loadedFiles.push({
@@ -5113,7 +5282,11 @@
         name: importedPath.split(/[\\/]/).pop(),
         rowCount: summary.rowCount,
         columns: summary.columns,
+        cacheDbPath: summary.cacheDbPath,
+        warning: summary.warning,
         summary,
+        indexing: false,
+        error: null,
       });
       activeFileIndex = loadedFiles.length - 1;
     }
@@ -5134,8 +5307,9 @@
 
     const fileName = importedPath.split(/[\\/]/).pop();
     const fileCountBadge = loadedFiles.length > 1 ? ` [${activeFileIndex + 1}/${loadedFiles.length} files]` : "";
-    fileInfo.textContent = `${fileName}${fileCountBadge} — ${summary.rowCount.toLocaleString()} rows, ${columns.length} columns${summary.fromCache ? " (cached)" : ""}`;
-    fileInfo.title = importedPath;
+    const warningBadge = summary.warning ? ` ⚠️ ${summary.warning}` : "";
+    fileInfo.textContent = `${fileName}${fileCountBadge} — ${summary.rowCount.toLocaleString()} rows, ${columns.length} columns${summary.fromCache ? " (cached)" : ""}${warningBadge}`;
+    fileInfo.title = summary.warning ? `${importedPath}\nWarning: ${summary.warning}` : importedPath;
 
     // reset controls
     hiddenRowNums.clear();
@@ -5455,11 +5629,22 @@
       const isCurrent = file.path === currentPath;
       const card = document.createElement("div");
       card.className = `correlation-file-card${isCurrent ? " active" : ""}`;
+      let rowLabel = "Imported";
+      if (file.indexing) {
+        rowLabel = "⏳ Indexing...";
+      } else if (file.error) {
+        rowLabel = `⚠️ ${escapeHtml(file.error)}`;
+      } else if (file.rowCount != null) {
+        rowLabel = `${file.rowCount.toLocaleString()} rows`;
+      }
+      const warningHtml = file.warning
+        ? ` <span title="${escapeHtml(file.warning)}" style="cursor:help;">⚠️</span>`
+        : "";
       card.innerHTML = `
         <span style="font-size:16px;">📄</span>
         <div>
-          <div class="file-name-label" title="${file.path}">${escapeHtml(file.name)}</div>
-          <div class="file-rows-label">${file.rowCount != null ? `${file.rowCount.toLocaleString()} rows` : "Imported"}${file.sheet ? ` [${escapeHtml(file.sheet)}]` : ""}</div>
+          <div class="file-name-label" title="${escapeHtml(file.path)}">${escapeHtml(file.name)}</div>
+          <div class="file-rows-label">${rowLabel}${file.sheet ? ` [${escapeHtml(file.sheet)}]` : ""}${warningHtml}</div>
         </div>
         <button class="btn btn-small" style="margin-left:auto;">${isCurrent ? "Active" : "Switch"}</button>
       `;
@@ -5491,7 +5676,7 @@
       const filesPayload = loadedFiles.map((f) => ({
         path: f.path,
         sheet: f.sheet || null,
-        cacheDbPath: f.summary?.cacheDbPath || null,
+        cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
       }));
       const results = await invoke("cross_search_files", { files: filesPayload, query: q });
       crossSearchResultsData = { query: q, results };
@@ -5580,7 +5765,7 @@
       const filesPayload = loadedFiles.map((f) => ({
         path: f.path,
         sheet: f.sheet || null,
-        cacheDbPath: f.summary?.cacheDbPath || null,
+        cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
       }));
       const summary = await invoke("cross_ioc_overlap", { files: filesPayload });
       crossIocSummary = summary;
@@ -5689,7 +5874,7 @@
           const filesPayload = loadedFiles.map((f) => ({
             path: f.path,
             sheet: f.sheet || null,
-            cacheDbPath: f.summary?.cacheDbPath || null,
+            cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
           }));
           const evts = await invoke("get_unified_ioc_events", {
             files: filesPayload,
@@ -5924,7 +6109,7 @@
             const filesPayload = loadedFiles.map((f) => ({
               path: f.path,
               sheet: f.sheet || null,
-              cacheDbPath: f.summary?.cacheDbPath || null,
+              cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
             }));
             const q = guidedSearchBox.value.trim();
             showProgress("Loading unified cross-file events...", 0.5);
@@ -6145,7 +6330,7 @@
         ? loadedFiles.map((f) => ({
             path: f.path,
             sheet: f.sheet || null,
-            cacheDbPath: f.summary?.cacheDbPath || null,
+            cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
           }))
         : null;
 
@@ -7193,6 +7378,23 @@
     showProgress(label, fraction);
   });
 
+  listen("batch-cache-progress", (event) => {
+    const payload = event.payload || {};
+    const path = payload.path;
+    const rowCount = payload.rowCount ?? payload.row_count;
+    const error = payload.error;
+    const entry = loadedFiles.find((f) => f.path === path);
+    if (entry) {
+      if (rowCount != null && rowCount > 0) entry.rowCount = rowCount;
+      if (error) {
+        entry.error = error;
+      }
+      entry.indexing = false;
+    }
+    updateFileSwitcherUi();
+    renderCorrelationScope();
+  });
+
   listen("semantic-index-progress", (event) => {
     if (semanticIndexState.status !== "building" || !activeSemanticIndexRequest) return;
     const {
@@ -7314,6 +7516,15 @@
     },
     getState() {
       return { spec, hasMore, pageIndex, totalCount, columns };
+    },
+    async batchEnsureCachedForTest(paths) {
+      return batchEnsureCached(paths);
+    },
+    getLoadedFilesForTest() {
+      return loadedFiles;
+    },
+    getActiveDatasetForTest() {
+      return getActiveDataset();
     },
     async askAnalystForTest(text) {
       if (!text) {
@@ -7464,6 +7675,12 @@
     },
     exportUnifiedCorrelatedDataForTest(format) {
       return exportUnifiedCorrelatedData(format);
+    },
+    async filterGridByIntelForTest(filterType, filterValue, displayName) {
+      return filterGridByIntel(filterType, filterValue, displayName);
+    },
+    setIntelScanSummaryResultForTest(val) {
+      intelScanSummaryResult = val;
     },
     returnToUnifiedCorrelatedGridForTest() {
       return returnToUnifiedCorrelatedGrid();

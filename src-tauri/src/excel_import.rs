@@ -1,5 +1,5 @@
 use crate::db::{self, ColumnMeta};
-pub use crate::header_utils::sanitize_headers;
+pub use crate::header_utils::{generate_synthetic_columns, is_likely_header_row, sanitize_headers};
 use anyhow::{Context, Result};
 use calamine::{open_workbook_auto, Data, Reader};
 use std::path::Path;
@@ -13,6 +13,7 @@ pub fn list_sheet_names(path: &Path) -> Result<Vec<String>> {
 pub struct ImportResult {
     pub columns: Vec<ColumnMeta>,
     pub row_count: i64,
+    pub warning: Option<String>,
 }
 
 const BATCH_SIZE: u64 = 5000;
@@ -37,12 +38,59 @@ pub fn import_into_db(
         .with_context(|| format!("reading sheet '{sheet_name}'"))?;
 
     let (height, _width) = range.get_size();
-    let total_rows = (height as u64).saturating_sub(1);
+    if height == 0 {
+        let columns = generate_synthetic_columns(1);
+        let conn = db::open(db_path)?;
+        db::set_import_pragmas(&conn)?;
+        db::create_schema(&conn, &columns)?;
+        db::populate_fts(&conn, &columns)?;
+        db::restore_normal_pragmas(&conn)?;
+        return Ok(ImportResult {
+            columns,
+            row_count: 0,
+            warning: Some("Sheet is empty (0 rows).".to_string()),
+        });
+    }
 
     let mut rows_iter = range.rows();
-    let header_row = rows_iter.next().context("sheet has no header row")?;
-    let raw_headers: Vec<String> = header_row.iter().map(cell_to_string).collect();
-    let columns = sanitize_headers(&raw_headers);
+    let first_row = match rows_iter.next() {
+        Some(r) => r,
+        None => {
+            let columns = generate_synthetic_columns(1);
+            let conn = db::open(db_path)?;
+            db::set_import_pragmas(&conn)?;
+            db::create_schema(&conn, &columns)?;
+            db::populate_fts(&conn, &columns)?;
+            db::restore_normal_pragmas(&conn)?;
+            return Ok(ImportResult {
+                columns,
+                row_count: 0,
+                warning: Some("Sheet is empty (0 rows).".to_string()),
+            });
+        }
+    };
+
+    let first_row_strings: Vec<String> = first_row.iter().map(cell_to_string).collect();
+    let is_header = is_likely_header_row(&first_row_strings);
+
+    let (columns, warning, total_rows) = if is_header {
+        (
+            sanitize_headers(&first_row_strings),
+            None,
+            (height as u64).saturating_sub(1),
+        )
+    } else {
+        let cols = if first_row_strings.len() <= 1 {
+            generate_synthetic_columns(1)
+        } else {
+            generate_synthetic_columns(first_row_strings.len())
+        };
+        (
+            cols,
+            Some("No sheet header row detected; synthetic headers were assigned and all rows preserved as evidence.".to_string()),
+            height as u64,
+        )
+    };
 
     let mut conn = db::open(db_path)?;
     db::set_import_pragmas(&conn)?;
@@ -59,18 +107,26 @@ pub fn import_into_db(
         placeholders.join(", ")
     );
 
-    let mut rows_iter = rows_iter.peekable();
+    let mut pending_first = if is_header { None } else { Some(first_row) };
     let mut row_count: i64 = 0;
 
-    while rows_iter.peek().is_some() {
+    loop {
+        if pending_first.is_none() && rows_iter.len() == 0 {
+            break;
+        }
         let tx = conn.transaction()?;
         {
             let mut stmt = tx.prepare(&insert_sql)?;
             let mut in_batch = 0u64;
             while in_batch < BATCH_SIZE {
-                let Some(row) = rows_iter.next() else {
+                let row = if let Some(first) = pending_first.take() {
+                    first
+                } else if let Some(next) = rows_iter.next() {
+                    next
+                } else {
                     break;
                 };
+
                 row_count += 1;
                 let row_num = row_count;
 
@@ -94,7 +150,11 @@ pub fn import_into_db(
     db::populate_fts(&conn, &columns)?;
     db::restore_normal_pragmas(&conn)?;
 
-    Ok(ImportResult { columns, row_count })
+    Ok(ImportResult {
+        columns,
+        row_count,
+        warning,
+    })
 }
 
 fn cell_to_string(cell: &Data) -> String {

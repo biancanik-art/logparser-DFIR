@@ -68,6 +68,7 @@ pub fn run() {
             commands::export_unified_multisheet_xlsx,
             commands::get_row_raw_details,
             commands::scan_all_files_intel_matches,
+            commands::batch_ensure_cached,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

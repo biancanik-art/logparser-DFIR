@@ -7,6 +7,7 @@ use std::path::Path;
 pub struct ImportResult {
     pub columns: Vec<ColumnMeta>,
     pub row_count: i64,
+    pub warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
@@ -20,6 +21,7 @@ impl From<csv_import::ImportResult> for ImportResult {
         Self {
             columns: result.columns,
             row_count: result.row_count,
+            warning: result.warning,
         }
     }
 }
@@ -29,6 +31,7 @@ impl From<excel_import::ImportResult> for ImportResult {
         Self {
             columns: result.columns,
             row_count: result.row_count,
+            warning: result.warning,
         }
     }
 }

@@ -11,7 +11,8 @@ See the [wiki](../../wiki) for a full user guide.
 
 ## Features
 
-- **Multi-File Cross-Log Correlation**: Ingest multiple disparate logs (M365 UAL, Windows Event Logs, Sysmon, Firewall, VPN) simultaneously without forcing them into a flattened, sparse schema. *(Note: When opening multiple files for cross-log correlation, switch to each file once via the toolbar dropdown or Multi-File tab to build its local SQLite search database).*
+- **Multi-File Cross-Log Correlation & Auto-Ingestion**: Ingest dozens or hundreds of disparate logs (e.g. 145 CSVs, M365 UAL, Windows Event Logs, Sysmon, Firewall, VPN) simultaneously without forcing them into a flattened, sparse schema. When multiple files are opened, the first file is displayed immediately while all remaining files are automatically indexed and cached into local SQLite databases in the background with live progress indicators (`⏳`).
+- **Resilient Raw & Headerless Log Ingestion**: Never rejects logs lacking a formal header row or single-column raw text/error logs (such as `php-fpm-error.xlsx`). Automatically detects headerless formats, synthesizes clean column names (`Column 1`, `raw_record`), and preserves row 1 as evidentiary data with non-blocking audit notices.
 - **Global Pivot Search**: Search entities (IPs, users, hashes, domains) across all open files in parallel with instant snippet previews.
 - **Shared Indicator (IOC) Co-occurrence Matrix**: Detect indicators that appear across 2 or more evidence files, with export to Excel, CSV, or JSON.
 - **Whole-Picture 1-Click Filter**: Isolate all correlated timeline events directly in the Evidence Grid with a single click.
@@ -23,8 +24,8 @@ See the [wiki](../../wiki) for a full user guide.
 - An offline, built-in MITRE ATT&CK-style keyword library, scanned via Aho-Corasick pattern matching, extensible with your own custom categories.
 - Local AI evidence search powered by embedded Qwen2.5-1.5B-Instruct and all-MiniLM-L6-v2 models. Describe the evidence in plain language (for example, *"show failed logins followed by PowerShell activity for alice, chronologically"*). Qwen plans a validated, bounded lexical/structured query over the complete raw table. MiniLM can supplement that plan with semantically similar evidence. Neither path is restricted by data mappings or rows found by the optional threat scan.
 - One-step AI search: submitting a request validates and executes its bounded plan immediately, and asks for clarification only when a safe search cannot be formed. Returned rows include a `Why matched` explanation. Generated search values must be grounded in the examiner's request. The models cannot execute SQL, read arbitrary files, launch processes, or access the network.
-- Interactive Threat Enrichment & Attack Chains: Clickable MITRE ATT&CK tactics, techniques, and correlated attack chains with 1-click drilldowns to filter the Evidence Grid.
-- One-click multi-sheet XLSX report export: a case-summary sheet, a chronological MITRE-mapped timeline, and one sheet per matched technique category — every row traceable back to its original source row.
+- Interactive Threat Enrichment & Attack Chains: Clickable MITRE ATT&CK tactics, techniques, and correlated attack chains. In multi-file cases, 1-click drilldowns ("View in Table" / "Filter Grid") seamlessly route to the Unified Correlated Grid when matches span multiple files, or auto-switch to the matching evidence file when hits are concentrated in a single log.
+- One-click multi-sheet XLSX report export: a case-summary sheet, a chronological MITRE-mapped timeline, and one sheet per matched technique category — every row traceable back to its original source row. Also supports exporting the complete Unified Correlated Grid into multi-sheet Excel workbooks.
 
 ## Grid Controls & Keyboard Shortcuts
 
