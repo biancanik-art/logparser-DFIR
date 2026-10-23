@@ -57,6 +57,10 @@
         <span class="tab-icon">⚡</span> Threat Enrichment
         <span id="badge-enrichment" class="nav-tab-badge hidden">0</span>
       </button>
+            <button class="nav-tab" data-tab="tab-universal-ioc" role="tab" aria-selected="false">
+        <span class="tab-icon">ðŸŽ¯</span> Universal IOC Hunter
+        <span id="badge-universal-ioc" class="nav-tab-badge hidden">0</span>
+      </button>
       <button class="nav-tab" data-tab="tab-rules" role="tab" aria-selected="false">
         <span class="tab-icon">⚙️</span> Data Mapping &amp; Rules
         <span id="badge-rules" class="nav-tab-badge hidden">0</span>
@@ -586,6 +590,184 @@
               <button id="timezone-normalize-btn" class="btn btn-primary">Use timezone</button>
             </div>
           </section>
+        </div>
+      </div>
+    
+      <!-- TAB 6: Universal IOC Hunter & Forensic Reporting -->
+      <div id="tab-universal-ioc" class="tab-pane" role="tabpanel">
+        <div class="pane-header">
+          <div class="pane-title-group">
+            <h2 class="pane-title">ðŸŽ¯ Universal IOC Hunter &amp; Forensic Correlation</h2>
+            <span class="automatic-badge">Multi-Format Engine</span>
+          </div>
+          <div class="pane-actions">
+            <button id="run-u-scan-btn" class="btn btn-primary btn-small">🚀 Run IOC Scan</button>
+            <button id="export-u-forensic-btn" class="btn btn-small" disabled>📥 Export Forensic Workbook (.xlsx)</button>
+            <button id="view-u-analytics-btn" class="btn btn-small">📊 Cloud &amp; JSON Analytics</button>
+            <button id="view-u-audit-btn" class="btn btn-small">📋 Ingest Audit &amp; Failures</button>
+            <button id="u-maximize-btn" class="btn btn-small btn-expand-pane" title="Maximize View">⛶ Expand</button>
+          </div>
+        </div>
+
+        <div class="u-workspace" style="display:flex; flex-direction:column; gap:16px; padding:16px; overflow-y:auto; height:calc(100vh - 120px);">
+          
+          <!-- Ingestion & Validation Summary Metrics -->
+          <div class="u-metrics-row" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap:12px;">
+            <div class="metric-card" style="background:var(--bg-panel); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <div style="font-size:11px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Total Ingested Records</div>
+              <div id="u-metric-total-rows" style="font-size:24px; font-weight:bold; color:var(--text-main); margin-top:4px;">0</div>
+              <div style="font-size:11px; color:#10b981; margin-top:2px;">Preserved in disk SQLite</div>
+            </div>
+            <div class="metric-card" style="background:var(--bg-panel); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <div style="font-size:11px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Parsing Failures</div>
+              <div id="u-metric-failures" style="font-size:24px; font-weight:bold; color:#ef4444; margin-top:4px;">0</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Never silently discarded</div>
+            </div>
+            <div class="metric-card" style="background:var(--bg-panel); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <div style="font-size:11px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Active IOCs</div>
+              <div id="u-metric-iocs" style="font-size:24px; font-weight:bold; color:#3b82f6; margin-top:4px;">0</div>
+              <div style="font-size:11px; color:var(--text-muted); margin-top:2px;">Agnostic across all fields</div>
+            </div>
+            <div class="metric-card" style="background:var(--bg-panel); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <div style="font-size:11px; color:var(--text-muted); text-transform:uppercase; font-weight:600;">Total Matched Events</div>
+              <div id="u-metric-matches" style="font-size:24px; font-weight:bold; color:#f59e0b; margin-top:4px;">0</div>
+              <div id="u-metric-matches-sub" style="font-size:11px; color:var(--text-muted); margin-top:2px;">0 unique rows</div>
+            </div>
+          </div>
+
+          <!-- Section 1: Universal IOC Input & Management -->
+          <div style="background:var(--bg-panel); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px;">
+              <h3 style="margin:0; font-size:15px; font-weight:600;">ðŸ›¡ï¸ Universal IOC Input &amp; Management</h3>
+              <div style="display:flex; gap:8px;">
+                <button id="u-import-ioc-file-btn" class="btn btn-small" type="button">ðŸ“‚ Import TXT / CSV IOCs</button>
+                <button id="u-clear-iocs-btn" class="btn btn-small" type="button" style="color:#ef4444;">Clear All IOCs</button>
+              </div>
+            </div>
+
+            <div style="display:grid; grid-template-columns: 1fr 1.5fr; gap:16px;">
+              <!-- Paste Box -->
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <label style="font-size:12px; font-weight:600; color:var(--text-muted);">Paste Multiline IOCs (one per line, or CSV):</label>
+                <textarea id="u-ioc-paste-box" style="height:120px; font-family:monospace; font-size:12px; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:8px; resize:vertical;" placeholder="Paste indicators here:&#10;192.168.1.50&#10;10.0.0.0/8&#10;evil-c2.attacker.com&#10;powershell.exe&#10;44d88612fea8a8f36de82e1278abb02f&#10;regex:.*-enc\s+[A-Za-z0-9+/=]+&#10;HKLM\Software\Microsoft\Windows\CurrentVersion\Run"></textarea>
+                <div style="display:flex; gap:8px;">
+                  <input id="u-ioc-desc-input" type="text" placeholder="Description / Case Tag (optional)" style="flex:1; background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:6px 8px; font-size:12px;" />
+                  <button id="u-add-pasted-iocs-btn" class="btn btn-primary btn-small" type="button">âž• Add &amp; Classify</button>
+                </div>
+                <span style="font-size:11px; color:var(--text-muted);">Auto-detects: IP, CIDR, Domain, URL, Email, User, Host, Hash, Path, RegKey, Process, GUID, Regex.</span>
+              </div>
+
+              <!-- Managed IOC Table -->
+              <div style="display:flex; flex-direction:column; gap:8px;">
+                <div style="display:flex; justify-content:space-between; align-items:center;">
+                  <label style="font-size:12px; font-weight:600; color:var(--text-muted);">Loaded IOCs &amp; Allowlists:</label>
+                  <input id="u-ioc-table-filter" type="search" placeholder="Filter IOC list..." style="background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:4px 8px; font-size:11px; max-width:180px;" />
+                </div>
+                <div id="u-ioc-list-container" style="max-height:160px; overflow-y:auto; border:1px solid var(--border-color); border-radius:4px; background:var(--bg-main);">
+                  <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                    <thead>
+                      <tr style="border-bottom:1px solid var(--border-color); background:var(--bg-header); text-align:left;">
+                        <th style="padding:6px 8px;">Type</th>
+                        <th style="padding:6px 8px;">Indicator</th>
+                        <th style="padding:6px 8px;">Description</th>
+                        <th style="padding:6px 8px; text-align:center;">Active</th>
+                        <th style="padding:6px 8px; text-align:center;">Exclusion</th>
+                        <th style="padding:6px 8px; text-align:center;">Action</th>
+                      </tr>
+                    </thead>
+                    <tbody id="u-ioc-list-tbody">
+                      <tr><td colspan="6" style="padding:16px; text-align:center; color:var(--text-muted);">No IOCs loaded. Paste or import indicators above.</td></tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Section 2: Correlated Pivots -->
+          <div id="u-pivots-section" class="hidden" style="background:var(--bg-panel); border:1px solid var(--border-color); border-radius:8px; padding:16px;">
+            <h3 style="margin:0 0 12px 0; font-size:15px; font-weight:600;">ðŸ”— Multi-Pivot Correlated Clusters</h3>
+            <div id="u-pivots-container" style="display:grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap:12px;"></div>
+          </div>
+
+          <!-- Section 3: Correlated Match Results Grid -->
+          <div style="background:var(--bg-panel); border:1px solid var(--border-color); border-radius:8px; padding:16px; flex:1; display:flex; flex-direction:column;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; flex-wrap:wrap; gap:8px;">
+              <h3 style="margin:0; font-size:15px; font-weight:600;">ðŸ“‹ Matching Forensic Evidence Timeline</h3>
+              <div style="display:flex; gap:8px; align-items:center;">
+                <select id="u-matches-type-filter" style="background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:4px 8px; font-size:12px;">
+                  <option value="all">All IOC Types</option>
+                  <option value="ip">IP Addresses</option>
+                  <option value="cidr">CIDR Subnets</option>
+                  <option value="domain">Domains</option>
+                  <option value="hash">Hashes</option>
+                  <option value="username">Users / Accounts</option>
+                  <option value="process_name">Processes</option>
+                  <option value="command_line">Command Lines</option>
+                </select>
+                <select id="u-matches-suppress-filter" style="background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:4px 8px; font-size:12px;">
+                  <option value="all">All Matches</option>
+                  <option value="active" selected>Suspicious Only</option>
+                  <option value="suppressed">Allowlist Suppressed Only</option>
+                </select>
+                <input id="u-matches-search-input" type="search" placeholder="Search matching rows..." style="background:var(--bg-input); color:var(--text-main); border:1px solid var(--border-color); border-radius:4px; padding:4px 8px; font-size:12px; width:200px;" />
+              </div>
+            </div>
+
+            <div id="u-matches-table-wrap" style="flex:1; max-height:400px; overflow:auto; border:1px solid var(--border-color); border-radius:4px; background:var(--bg-main);">
+              <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead>
+                  <tr style="border-bottom:1px solid var(--border-color); background:var(--bg-header); text-align:left; position:sticky; top:0; z-index:2;">
+                    <th style="padding:8px;">#</th>
+                    <th style="padding:8px;">Time (UTC)</th>
+                    <th style="padding:8px;">IOC Value</th>
+                    <th style="padding:8px;">Type</th>
+                    <th style="padding:8px;">Matched Field</th>
+                    <th style="padding:8px;">Match Kind</th>
+                    <th style="padding:8px;">Status</th>
+                    <th style="padding:8px;">Summary</th>
+                    <th style="padding:8px; text-align:center;">Evidence</th>
+                  </tr>
+                </thead>
+                <tbody id="u-matches-tbody">
+                  <tr><td colspan="9" style="padding:24px; text-align:center; color:var(--text-muted);">No scan executed yet. Click "Run IOC Scan" to analyze imported evidence against all IOCs.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Parse Failures & Audit Modal -->
+      <div id="u-audit-modal" class="shortcuts-modal hidden" role="dialog" aria-modal="true">
+        <div class="shortcuts-modal-card" style="max-width:800px; width:90%;">
+          <div class="shortcuts-modal-header">
+            <div class="shortcuts-modal-title-group">
+              <span class="shortcuts-modal-badge">Evidence Audit</span>
+              <h3>Ingestion Audit &amp; Parse Failures</h3>
+            </div>
+            <button id="u-audit-modal-close-btn" class="btn btn-small btn-icon">✕</button>
+          </div>
+          <div class="shortcuts-modal-body" style="max-height:450px; overflow-y:auto; padding:16px;">
+            <p style="font-size:13px; color:var(--text-muted);">All unparseable lines or format errors are stored here and never silently discarded.</p>
+            <div id="u-audit-failures-list" style="margin-top:12px;"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cloud & JSON Analytics Modal -->
+      <div id="u-analytics-modal" class="shortcuts-modal hidden" role="dialog" aria-modal="true">
+        <div class="shortcuts-modal-card" style="max-width:920px; width:92%;">
+          <div class="shortcuts-modal-header">
+            <div class="shortcuts-modal-title-group">
+              <span class="shortcuts-modal-badge" style="background:#0284c7; color:#fff;">Cloud &amp; JSON Analytics</span>
+              <h3>Cosmos DB, API &amp; Microservices Log Analytics</h3>
+            </div>
+            <button id="u-analytics-modal-close-btn" class="btn btn-small btn-icon">✕</button>
+          </div>
+          <div class="shortcuts-modal-body" style="max-height:550px; overflow-y:auto; padding:16px;">
+            <div id="u-analytics-content"></div>
+          </div>
         </div>
       </div>
     </div>

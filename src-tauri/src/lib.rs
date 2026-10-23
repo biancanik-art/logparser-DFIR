@@ -9,6 +9,8 @@ pub mod query;
 pub mod report;
 pub mod semantic;
 pub mod tabular_import;
+pub mod universal_export;
+pub mod universal_import;
 
 use commands::AppState;
 use tauri::{path::BaseDirectory, Manager};
@@ -69,6 +71,15 @@ pub fn run() {
             commands::get_row_raw_details,
             commands::scan_all_files_intel_matches,
             commands::batch_ensure_cached,
+            commands::add_universal_iocs,
+            commands::list_universal_iocs,
+            commands::toggle_universal_ioc,
+            commands::remove_universal_ioc,
+            commands::run_universal_ioc_scan,
+            commands::get_universal_ioc_matches,
+            commands::get_ingest_audit,
+            commands::get_log_analytics_summary,
+            commands::export_forensic_workbook,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

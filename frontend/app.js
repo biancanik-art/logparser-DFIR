@@ -4530,7 +4530,19 @@
       const selected = await invoke("plugin:dialog|open", {
         options: {
           multiple: true,
-          filters: [{ name: "Tabular files", extensions: ["xlsx", "xls", "xlsb", "ods", "csv"] }],
+          filters: [
+            {
+              name: "All Supported Forensic Logs",
+              extensions: ["json", "jsonl", "ndjson", "gz", "csv", "tsv", "tab", "evtx", "log", "syslog", "txt", "xml", "xlsx", "xls", "xlsb", "ods"]
+            },
+            { name: "JSON & JSONL", extensions: ["json", "jsonl", "ndjson", "gz"] },
+            { name: "Windows Event Logs (EVTX)", extensions: ["evtx"] },
+            { name: "Syslog & Plaintext Logs", extensions: ["log", "syslog", "txt"] },
+            { name: "Delimited Logs (CSV/TSV)", extensions: ["csv", "tsv", "tab"] },
+            { name: "XML Logs", extensions: ["xml"] },
+            { name: "Excel Workbooks", extensions: ["xlsx", "xls", "xlsb", "ods"] },
+            { name: "All Files", extensions: ["*"] }
+          ],
         },
       });
       if (!selected) {
@@ -7777,4 +7789,525 @@
       return closeShortcutsModal();
     },
   });
+
+  // =========================================================================
+  // UNIVERSAL IOC HUNTER, CORRELATION & FORENSIC AUDIT CONTROLLER
+  // =========================================================================
+  let uLoadedIocs = [];
+  let uCurrentMatches = [];
+  let uCurrentPivots = [];
+
+  const runUScanBtn = document.getElementById("run-u-scan-btn");
+  const exportUForensicBtn = document.getElementById("export-u-forensic-btn");
+  const viewUAuditBtn = document.getElementById("view-u-audit-btn");
+  const uAddPastedIocsBtn = document.getElementById("u-add-pasted-iocs-btn");
+  const uIocPasteBox = document.getElementById("u-ioc-paste-box");
+  const uIocDescInput = document.getElementById("u-ioc-desc-input");
+  const uImportIocFileBtn = document.getElementById("u-import-ioc-file-btn");
+  const uClearIocsBtn = document.getElementById("u-clear-iocs-btn");
+  const uIocTableFilter = document.getElementById("u-ioc-table-filter");
+  const uIocListTbody = document.getElementById("u-ioc-list-tbody");
+  const uPivotsSection = document.getElementById("u-pivots-section");
+  const uPivotsContainer = document.getElementById("u-pivots-container");
+  const uMatchesTypeFilter = document.getElementById("u-matches-type-filter");
+  const uMatchesSuppressFilter = document.getElementById("u-matches-suppress-filter");
+  const uMatchesSearchInput = document.getElementById("u-matches-search-input");
+  const uMatchesTbody = document.getElementById("u-matches-tbody");
+  const uAuditModal = document.getElementById("u-audit-modal");
+  const uAuditModalCloseBtn = document.getElementById("u-audit-modal-close-btn");
+  const uAuditFailuresList = document.getElementById("u-audit-failures-list");
+
+  // Metrics
+  const uMetricTotalRows = document.getElementById("u-metric-total-rows");
+  const uMetricFailures = document.getElementById("u-metric-failures");
+  const uMetricIocs = document.getElementById("u-metric-iocs");
+  const uMetricMatches = document.getElementById("u-metric-matches");
+  const uMetricMatchesSub = document.getElementById("u-metric-matches-sub");
+  const badgeUniversalIoc = document.getElementById("badge-universal-ioc");
+
+  async function refreshUniversalMetrics() {
+    if (!currentPath) return;
+    try {
+      const audit = await invoke("get_ingest_audit");
+      if (uMetricTotalRows) uMetricTotalRows.textContent = (audit.totalRows || 0).toLocaleString();
+      if (uMetricFailures) {
+        uMetricFailures.textContent = (audit.failuresCount || 0).toLocaleString();
+        uMetricFailures.style.color = (audit.failuresCount > 0) ? "#ef4444" : "var(--text-main)";
+      }
+      if (uMetricIocs) uMetricIocs.textContent = (audit.iocsCount || 0).toLocaleString();
+      if (uMetricMatches) uMetricMatches.textContent = (audit.matchesCount || 0).toLocaleString();
+    } catch (_) {}
+  }
+
+  async function loadUniversalIocsList() {
+    if (!currentPath) return;
+    try {
+      uLoadedIocs = await invoke("list_universal_iocs");
+      renderUniversalIocsTable();
+      refreshUniversalMetrics();
+    } catch (err) {
+      console.warn("Failed loading universal IOCs:", err);
+    }
+  }
+
+  function renderUniversalIocsTable() {
+    if (!uIocListTbody) return;
+    const filterText = (uIocTableFilter?.value || "").trim().toLowerCase();
+    const filtered = uLoadedIocs.filter(ioc => {
+      if (!filterText) return true;
+      return (ioc.value || "").toLowerCase().includes(filterText) ||
+             (ioc.iocType || "").toLowerCase().includes(filterText) ||
+             (ioc.description || "").toLowerCase().includes(filterText);
+    });
+
+    if (filtered.length === 0) {
+      uIocListTbody.innerHTML = `<tr><td colspan="6" style="padding:16px; text-align:center; color:var(--text-muted);">${uLoadedIocs.length === 0 ? "No IOCs loaded. Paste or import indicators above." : "No matching IOCs found."}</td></tr>`;
+      return;
+    }
+
+    uIocListTbody.innerHTML = filtered.map(ioc => `
+      <tr style="border-bottom:1px solid var(--border-color); ${!ioc.enabled ? "opacity:0.5;" : ""}">
+        <td style="padding:6px 8px;"><span class="badge" style="font-size:10px; background:var(--bg-accent); padding:2px 6px; border-radius:3px;">${escapeHtml(ioc.iocType)}</span></td>
+        <td style="padding:6px 8px; font-family:monospace; font-size:11px; word-break:break-all;">${escapeHtml(ioc.value)}</td>
+        <td style="padding:6px 8px; color:var(--text-muted); font-size:11px;">${escapeHtml(ioc.description || "â€”")}</td>
+        <td style="padding:6px 8px; text-align:center;">
+          <input type="checkbox" class="u-ioc-toggle-active" data-id="${ioc.id}" ${ioc.enabled ? "checked" : ""} title="Enable or disable this IOC without deleting" />
+        </td>
+        <td style="padding:6px 8px; text-align:center;">
+          <input type="checkbox" class="u-ioc-toggle-excl" data-id="${ioc.id}" ${ioc.isExclusion ? "checked" : ""} title="Mark as Allowlist / Exclusion (suppresses alerts while preserving evidence)" />
+        </td>
+        <td style="padding:6px 8px; text-align:center;">
+          <button class="btn btn-small u-ioc-delete-btn" data-id="${ioc.id}" style="padding:1px 6px; color:#ef4444; font-size:11px;" title="Remove IOC">âœ•</button>
+        </td>
+      </tr>
+    `).join("");
+
+    // Wire listeners
+    uIocListTbody.querySelectorAll(".u-ioc-toggle-active").forEach(cb => {
+      cb.addEventListener("change", async (e) => {
+        const id = parseInt(e.target.dataset.id, 10);
+        const item = uLoadedIocs.find(x => x.id === id);
+        if (item) {
+          item.enabled = e.target.checked;
+          await invoke("toggle_universal_ioc", { id, enabled: item.enabled, isExclusion: item.isExclusion });
+          renderUniversalIocsTable();
+        }
+      });
+    });
+
+    uIocListTbody.querySelectorAll(".u-ioc-toggle-excl").forEach(cb => {
+      cb.addEventListener("change", async (e) => {
+        const id = parseInt(e.target.dataset.id, 10);
+        const item = uLoadedIocs.find(x => x.id === id);
+        if (item) {
+          item.isExclusion = e.target.checked;
+          await invoke("toggle_universal_ioc", { id, enabled: item.enabled, isExclusion: item.isExclusion });
+          renderUniversalIocsTable();
+        }
+      });
+    });
+
+    uIocListTbody.querySelectorAll(".u-ioc-delete-btn").forEach(btn => {
+      btn.addEventListener("click", async (e) => {
+        const id = parseInt(e.target.dataset.id, 10);
+        await invoke("remove_universal_ioc", { id });
+        uLoadedIocs = uLoadedIocs.filter(x => x.id !== id);
+        renderUniversalIocsTable();
+        refreshUniversalMetrics();
+      });
+    });
+  }
+
+  // Paste / Add IOCs
+  if (uAddPastedIocsBtn) {
+    uAddPastedIocsBtn.addEventListener("click", async () => {
+      const text = (uIocPasteBox?.value || "").trim();
+      if (!text) {
+        alert("Please enter or paste at least one IOC indicator.");
+        return;
+      }
+      const desc = (uIocDescInput?.value || "").trim() || null;
+      try {
+        uAddPastedIocsBtn.disabled = true;
+        uAddPastedIocsBtn.textContent = "Addingâ€¦";
+        const res = await invoke("add_universal_iocs", { rawContent: text, description: desc });
+        uIocPasteBox.value = "";
+        await loadUniversalIocsList();
+        alert(`Successfully added ${res.added} IOCs (${res.skipped} skipped/duplicate).`);
+      } catch (err) {
+        alert(`Error adding IOCs: ${err}`);
+      } finally {
+        uAddPastedIocsBtn.disabled = false;
+        uAddPastedIocsBtn.textContent = "âž• Add & Classify";
+      }
+    });
+  }
+
+  // Import IOC File
+  if (uImportIocFileBtn) {
+    uImportIocFileBtn.addEventListener("click", async () => {
+      try {
+        const selected = await invoke("plugin:dialog|open", {
+          options: {
+            multiple: false,
+            filters: [
+              { name: "IOC Files (*.txt, *.csv)", extensions: ["txt", "csv"] },
+              { name: "All Files", extensions: ["*"] }
+            ]
+          }
+        });
+        if (!selected) return;
+        const filePath = Array.isArray(selected) ? selected[0] : selected;
+        // Read file using fs or command
+        const rawContent = await invoke("plugin:fs|readTextFile", { path: filePath });
+        const desc = `Imported from ${filePath.split(/[\\/]/).pop()}`;
+        const res = await invoke("add_universal_iocs", { rawContent, description: desc });
+        await loadUniversalIocsList();
+        alert(`Imported ${res.added} IOCs from ${filePath} (${res.skipped} skipped/duplicate).`);
+      } catch (err) {
+        alert(`Failed to import IOC file: ${err}`);
+      }
+    });
+  }
+
+  if (uClearIocsBtn) {
+    uClearIocsBtn.addEventListener("click", async () => {
+      if (!confirm("Are you sure you want to delete all configured IOCs?")) return;
+      for (const ioc of uLoadedIocs) {
+        await invoke("remove_universal_ioc", { id: ioc.id });
+      }
+      uLoadedIocs = [];
+      renderUniversalIocsTable();
+      refreshUniversalMetrics();
+    });
+  }
+
+  if (uIocTableFilter) {
+    uIocTableFilter.addEventListener("input", renderUniversalIocsTable);
+  }
+
+  // Run Universal Scan
+  if (runUScanBtn) {
+    runUScanBtn.addEventListener("click", async () => {
+      if (!currentPath) {
+        alert("Please load a log file first.");
+        return;
+      }
+      try {
+        runUScanBtn.disabled = true;
+        runUScanBtn.textContent = "â³ Scanningâ€¦";
+        const summary = await invoke("run_universal_ioc_scan");
+        uCurrentMatches = summary.matches || [];
+        uCurrentPivots = summary.correlatedPivots || [];
+
+        // Update UI metrics
+        if (uMetricMatches) uMetricMatches.textContent = (summary.totalMatches || 0).toLocaleString();
+        if (uMetricMatchesSub) uMetricMatchesSub.textContent = `${(summary.uniqueMatchedRows || 0).toLocaleString()} unique rows`;
+        if (badgeUniversalIoc) {
+          badgeUniversalIoc.textContent = `${summary.totalMatches || 0} hits`;
+          badgeUniversalIoc.classList.remove("hidden");
+        }
+        if (exportUForensicBtn) exportUForensicBtn.disabled = (uCurrentMatches.length === 0);
+
+        renderCorrelatedPivots(uCurrentPivots);
+        renderUniversalMatchesTable();
+        refreshUniversalMetrics();
+
+        alert(`Universal IOC Scan Completed!\nTotal Records: ${summary.totalRowsScanned.toLocaleString()}\nTotal Matches: ${summary.totalMatches}\nUnique Rows: ${summary.uniqueMatchedRows}\nUnique IOCs Hit: ${summary.uniqueIocsHit}\nSuppressed (Allowlist): ${summary.suppressedMatches}`);
+      } catch (err) {
+        alert(`Error executing scan: ${err}`);
+      } finally {
+        runUScanBtn.disabled = false;
+        runUScanBtn.textContent = "ðŸš€ Run IOC Scan";
+      }
+    });
+  }
+
+  function renderCorrelatedPivots(pivots) {
+    if (!uPivotsSection || !uPivotsContainer) return;
+    if (!pivots || pivots.length === 0) {
+      uPivotsSection.classList.add("hidden");
+      return;
+    }
+    uPivotsSection.classList.remove("hidden");
+    uPivotsContainer.innerHTML = pivots.map(p => `
+      <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:10px;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <span class="badge" style="background:#3b82f6; color:#fff; font-size:10px; padding:2px 6px; border-radius:3px;">PIVOT: ${escapeHtml(p.pivotType.toUpperCase())}</span>
+          <span style="font-size:11px; font-weight:bold; color:var(--text-main);">${p.eventCount} matching events</span>
+        </div>
+        <div style="font-family:monospace; font-weight:bold; font-size:13px; margin:6px 0; color:#38bdf8; word-break:break-all;">${escapeHtml(p.pivotValue)}</div>
+        <div style="font-size:11px; color:var(--text-muted);">
+          Time range: ${escapeHtml(p.earliestTime || "N/A")} &rarr; ${escapeHtml(p.latestTime || "N/A")}
+        </div>
+      </div>
+    `).join("");
+  }
+
+  function renderUniversalMatchesTable() {
+    if (!uMatchesTbody) return;
+    const typeFilter = uMatchesTypeFilter?.value || "all";
+    const suppressFilter = uMatchesSuppressFilter?.value || "active";
+    const searchText = (uMatchesSearchInput?.value || "").trim().toLowerCase();
+
+    const filtered = uCurrentMatches.filter(m => {
+      if (typeFilter !== "all" && m.iocType !== typeFilter) return false;
+      if (suppressFilter === "active" && m.isSuppressed) return false;
+      if (suppressFilter === "suppressed" && !m.isSuppressed) return false;
+      if (searchText) {
+        const full = `${m.iocValue} ${m.matchedField} ${m.matchedValue} ${m.eventSummary} ${m.timestampUtc || ""}`.toLowerCase();
+        if (!full.includes(searchText)) return false;
+      }
+      return true;
+    });
+
+    if (filtered.length === 0) {
+      uMatchesTbody.innerHTML = `<tr><td colspan="9" style="padding:24px; text-align:center; color:var(--text-muted);">${uCurrentMatches.length === 0 ? "No scan executed yet." : "No matching records found with current filters."}</td></tr>`;
+      return;
+    }
+
+    uMatchesTbody.innerHTML = filtered.map(m => `
+      <tr style="border-bottom:1px solid var(--border-color); ${m.isSuppressed ? "opacity:0.6; background:rgba(0,0,0,0.15);" : ""}">
+        <td style="padding:6px 8px; font-weight:600;">#${m.rowNum}</td>
+        <td style="padding:6px 8px; font-family:monospace; font-size:11px;">${escapeHtml(m.timestampUtc || "â€”")}</td>
+        <td style="padding:6px 8px; font-family:monospace; font-weight:bold; color:#38bdf8;">${escapeHtml(m.iocValue)}</td>
+        <td style="padding:6px 8px;"><span class="badge" style="font-size:10px; background:var(--bg-accent); padding:2px 5px; border-radius:3px;">${escapeHtml(m.iocType)}</span></td>
+        <td style="padding:6px 8px; font-family:monospace; font-size:11px; color:#a78bfa;">${escapeHtml(m.matchedField)}</td>
+        <td style="padding:6px 8px; font-size:11px;">${escapeHtml(m.matchKind)}</td>
+        <td style="padding:6px 8px;">
+          ${m.isSuppressed
+            ? `<span style="color:#10b981; font-size:11px; font-weight:600;">Benign (Suppressed)</span>`
+            : `<span style="color:#ef4444; font-size:11px; font-weight:bold;">â— Suspicious</span>`
+          }
+        </td>
+        <td style="padding:6px 8px; font-size:11px;">${escapeHtml(m.eventSummary)}</td>
+        <td style="padding:6px 8px; text-align:center;">
+          <button class="btn btn-small u-inspect-evidence-btn" data-row="${m.rowNum}" style="padding:2px 6px; font-size:11px;">ðŸ” Inspect</button>
+        </td>
+      </tr>
+    `).join("");
+
+    uMatchesTbody.querySelectorAll(".u-inspect-evidence-btn").forEach(btn => {
+      btn.addEventListener("click", () => {
+        const rowNum = parseInt(btn.dataset.row, 10);
+        openRowDetailDrawer(rowNum);
+      });
+    });
+  }
+
+  if (uMatchesTypeFilter) uMatchesTypeFilter.addEventListener("change", renderUniversalMatchesTable);
+  if (uMatchesSuppressFilter) uMatchesSuppressFilter.addEventListener("change", renderUniversalMatchesTable);
+  if (uMatchesSearchInput) uMatchesSearchInput.addEventListener("input", renderUniversalMatchesTable);
+
+  // Export Forensic Workbook
+  if (exportUForensicBtn) {
+    exportUForensicBtn.addEventListener("click", async () => {
+      try {
+        const defaultName = "DFIR_Master_Timeline.xlsx";
+        const dest = await invoke("plugin:dialog|save", {
+          options: {
+            defaultPath: defaultName,
+            filters: [{ name: "Forensic Excel Workbook (*.xlsx)", extensions: ["xlsx"] }]
+          }
+        });
+        if (!dest) return;
+
+        exportUForensicBtn.disabled = true;
+        exportUForensicBtn.textContent = "Exportingâ€¦";
+        const res = await invoke("export_forensic_workbook", {
+          destPath: dest,
+          analystName: "Forensic Examiner"
+        });
+
+        alert(`Forensic Reporting Workbook Exported Successfully!\n\nExcel: ${res.xlsxPath}\nTimeline CSV: ${res.csvTimelinePath}\nRecords Exported: ${res.totalExported}\n\nSheets included: MASTER TIMELINE, IOC, INVENTORY, SUSPICIOUS ACCOUNTS.`);
+      } catch (err) {
+        alert(`Export failed: ${err}`);
+      } finally {
+        exportUForensicBtn.disabled = false;
+        exportUForensicBtn.textContent = "ðŸ“¥ Export Forensic Workbook (.xlsx)";
+      }
+    });
+  }
+
+  // Ingest Audit & Failures Modal
+  if (viewUAuditBtn) {
+    viewUAuditBtn.addEventListener("click", async () => {
+      if (!uAuditModal || !uAuditFailuresList) return;
+      try {
+        const audit = await invoke("get_ingest_audit");
+        uAuditModal.classList.remove("hidden");
+        const fails = audit.failures || [];
+        if (fails.length === 0) {
+          uAuditFailuresList.innerHTML = `<div style="padding:16px; text-align:center; color:#10b981; font-weight:600;">âœ… Clean Ingestion: Zero parsing failures detected! All ${audit.totalRows.toLocaleString()} records ingested successfully.</div>`;
+        } else {
+          uAuditFailuresList.innerHTML = fails.map(f => `
+            <div style="background:var(--bg-panel); border:1px solid #ef4444; border-radius:4px; padding:8px 12px; margin-bottom:8px;">
+              <div style="display:flex; justify-content:space-between; font-size:11px; color:var(--text-muted);">
+                <span>Record #${f.recordNum} &bull; ${escapeHtml(f.sourcePath)}</span>
+                <span>${escapeHtml(f.occurredAt)}</span>
+              </div>
+              <div style="font-weight:bold; color:#ef4444; font-size:12px; margin:4px 0;">${escapeHtml(f.errorMessage)}</div>
+              <pre style="background:var(--bg-main); font-size:11px; padding:6px; border-radius:3px; overflow-x:auto; margin:0;">${escapeHtml(f.rawPayload || "No payload snippet")}</pre>
+            </div>
+          `).join("");
+        }
+      } catch (err) {
+        alert(`Could not load ingest audit: ${err}`);
+      }
+    });
+  }
+
+  if (uAuditModalCloseBtn) {
+    uAuditModalCloseBtn.addEventListener("click", () => {
+      uAuditModal?.classList.add("hidden");
+    });
+  }
+
+  // Cloud & JSON Log Analytics Modal (Cosmos DB, API & Microservices)
+  const viewUAnalyticsBtn = document.getElementById("view-u-analytics-btn");
+  const uAnalyticsModal = document.getElementById("u-analytics-modal");
+  const uAnalyticsModalCloseBtn = document.getElementById("u-analytics-modal-close-btn");
+  const uAnalyticsContent = document.getElementById("u-analytics-content");
+
+  if (viewUAnalyticsBtn) {
+    viewUAnalyticsBtn.addEventListener("click", async () => {
+      if (!currentPath) {
+        alert("Please load a log file first.");
+        return;
+      }
+      try {
+        const summary = await invoke("get_log_analytics_summary");
+        if (!uAnalyticsModal || !uAnalyticsContent) return;
+        uAnalyticsModal.classList.remove("hidden");
+
+        const ruStatsHtml = (summary.totalRequestChargeRu != null)
+          ? `<div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+               <div style="font-size:11px; color:var(--text-muted); font-weight:600;">COSMOS DB REQUEST UNITS (RU)</div>
+               <div style="font-size:20px; font-weight:bold; color:#38bdf8; margin-top:4px;">${summary.totalRequestChargeRu.toLocaleString(undefined, {maximumFractionDigits: 1})} <span style="font-size:12px; color:var(--text-muted);">(Max single: ${summary.maxRequestChargeRu != null ? summary.maxRequestChargeRu.toLocaleString() : 'N/A'})</span></div>
+             </div>`
+          : "";
+
+        const durationHtml = (summary.totalDurationMs != null)
+          ? `<div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+               <div style="font-size:11px; color:var(--text-muted); font-weight:600;">LATENCY / DURATION</div>
+               <div style="font-size:20px; font-weight:bold; color:#10b981; margin-top:4px;">${(summary.totalDurationMs / 1000).toFixed(2)}s <span style="font-size:12px; color:var(--text-muted);">(Max: ${summary.maxDurationMs != null ? summary.maxDurationMs + 'ms' : 'N/A'})</span></div>
+             </div>`
+          : "";
+
+        const topIpsRows = (summary.topIps || []).slice(0, 10).map(([ip, cnt]) => `
+          <tr style="border-bottom:1px solid var(--border-color);">
+            <td style="padding:4px 8px; font-family:monospace; color:#38bdf8;">${escapeHtml(ip)}</td>
+            <td style="padding:4px 8px; text-align:right; font-weight:bold;">${cnt.toLocaleString()}</td>
+          </tr>
+        `).join("");
+
+        const topOpsRows = (summary.topOperations || []).slice(0, 10).map(([op, cnt]) => `
+          <tr style="border-bottom:1px solid var(--border-color);">
+            <td style="padding:4px 8px; font-family:monospace; color:#a78bfa;">${escapeHtml(op)}</td>
+            <td style="padding:4px 8px; text-align:right; font-weight:bold;">${cnt.toLocaleString()}</td>
+          </tr>
+        `).join("");
+
+        const statusCodesRows = (summary.statusCodes || []).map(([sc, cnt]) => {
+          const color = (sc.startsWith("2")) ? "#10b981" : (sc.startsWith("4") ? "#f59e0b" : "#ef4444");
+          return `
+            <tr style="border-bottom:1px solid var(--border-color);">
+              <td style="padding:4px 8px; font-weight:bold; color:${color};">${escapeHtml(sc)}</td>
+              <td style="padding:4px 8px; text-align:right; font-weight:bold;">${cnt.toLocaleString()}</td>
+            </tr>
+          `;
+        }).join("");
+
+        const hourlyRows = (summary.hourlyDistribution || []).slice(0, 15).map(([hr, cnt]) => `
+          <tr style="border-bottom:1px solid var(--border-color);">
+            <td style="padding:4px 8px; font-family:monospace; font-size:11px;">${escapeHtml(hr)}:00</td>
+            <td style="padding:4px 8px; text-align:right; font-weight:bold;">${cnt.toLocaleString()}</td>
+          </tr>
+        `).join("");
+
+        uAnalyticsContent.innerHTML = `
+          <!-- Metric KPI Row -->
+          <div style="display:grid; grid-template-columns:repeat(auto-fit, minmax(180px, 1fr)); gap:12px;">
+            <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <div style="font-size:11px; color:var(--text-muted); font-weight:600;">TOTAL ANALYZED RECORDS</div>
+              <div style="font-size:20px; font-weight:bold; color:var(--text-main); margin-top:4px;">${summary.totalRecords.toLocaleString()}</div>
+            </div>
+            <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <div style="font-size:11px; color:var(--text-muted); font-weight:600;">EVIDENCE TIME WINDOW</div>
+              <div style="font-size:11px; font-family:monospace; color:var(--text-main); margin-top:6px;">
+                ${escapeHtml(summary.minTime || "N/A")}<br>&darr;<br>${escapeHtml(summary.maxTime || "N/A")}
+              </div>
+            </div>
+            ${ruStatsHtml}
+            ${durationHtml}
+          </div>
+
+          <!-- Tables Grid -->
+          <div style="display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-top:8px;">
+            <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <h4 style="margin:0 0 8px 0; font-size:13px; font-weight:600;">Top Source / Client IPs</h4>
+              <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                <thead><tr style="border-bottom:1px solid var(--border-color); color:var(--text-muted);"><th style="text-align:left; padding:4px 8px;">IP Address</th><th style="text-align:right; padding:4px 8px;">Count</th></tr></thead>
+                <tbody>${topIpsRows || "<tr><td colspan='2' style='padding:8px; text-align:center;'>No IPs indexed</td></tr>"}</tbody>
+              </table>
+            </div>
+
+            <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+              <h4 style="margin:0 0 8px 0; font-size:13px; font-weight:600;">Operations &amp; Status Codes</h4>
+              <div style="display:flex; flex-direction:column; gap:12px;">
+                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                  <thead><tr style="border-bottom:1px solid var(--border-color); color:var(--text-muted);"><th style="text-align:left; padding:4px 8px;">Operation / Action</th><th style="text-align:right; padding:4px 8px;">Count</th></tr></thead>
+                  <tbody>${topOpsRows || "<tr><td colspan='2' style='padding:8px; text-align:center;'>No operations indexed</td></tr>"}</tbody>
+                </table>
+                ${statusCodesRows ? `
+                <table style="width:100%; border-collapse:collapse; font-size:12px;">
+                  <thead><tr style="border-bottom:1px solid var(--border-color); color:var(--text-muted);"><th style="text-align:left; padding:4px 8px;">Status Code</th><th style="text-align:right; padding:4px 8px;">Count</th></tr></thead>
+                  <tbody>${statusCodesRows}</tbody>
+                </table>` : ""}
+              </div>
+            </div>
+          </div>
+
+          <!-- Hourly Distribution -->
+          <div style="background:var(--bg-main); border:1px solid var(--border-color); border-radius:6px; padding:12px;">
+            <h4 style="margin:0 0 8px 0; font-size:13px; font-weight:600;">Hourly Event Frequency Timeline</h4>
+            <table style="width:100%; border-collapse:collapse; font-size:12px;">
+              <thead><tr style="border-bottom:1px solid var(--border-color); color:var(--text-muted);"><th style="text-align:left; padding:4px 8px;">Hour (UTC)</th><th style="text-align:right; padding:4px 8px;">Events</th></tr></thead>
+              <tbody>${hourlyRows || "<tr><td colspan='2' style='padding:8px; text-align:center;'>No timestamp data available</td></tr>"}</tbody>
+            </table>
+          </div>
+        `;
+      } catch (err) {
+        alert(`Failed to load log analytics: ${err}`);
+      }
+    });
+  }
+
+  if (uAnalyticsModalCloseBtn) {
+    uAnalyticsModalCloseBtn.addEventListener("click", () => {
+      uAnalyticsModal?.classList.add("hidden");
+    });
+  }
+
+  // Hook into tab switching and initial load
+  const origSwitchTab = switchTab;
+  switchTab = function(targetTab) {
+    origSwitchTab(targetTab);
+    if (targetTab === "tab-universal-ioc") {
+      loadUniversalIocsList();
+      refreshUniversalMetrics();
+    }
+  };
+
+  // Progress listener
+  if (listen) {
+    listen("universal-ioc-progress", (evt) => {
+      if (runUScanBtn && evt.payload) {
+        const p = evt.payload;
+        runUScanBtn.textContent = `â³ Scanning (${p.done.toLocaleString()}${p.total > 0 ? " / " + p.total.toLocaleString() : ""})â€¦`;
+      }
+    });
+  }
+
+
 })();

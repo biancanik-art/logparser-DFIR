@@ -1,0 +1,259 @@
+use log_parser_lib::db;
+use log_parser_lib::intel::universal_ioc::{
+    auto_detect_ioc_type, execute_universal_ioc_scan, insert_bulk_iocs, CidrMatcher,
+    UniversalIocType,
+};
+use log_parser_lib::universal_export::export_forensic_workbook;
+use log_parser_lib::universal_import::{
+    compute_log_analytics_summary, detect_format, extract_normalized_fields, flatten_json_value,
+    import_stream_into_db, UniversalFormat,
+};
+use serde_json::json;
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::Write;
+
+#[test]
+fn test_universal_ioc_auto_detection() {
+    assert_eq!(auto_detect_ioc_type("192.168.1.1"), UniversalIocType::Ip);
+    assert_eq!(auto_detect_ioc_type("2001:db8::1"), UniversalIocType::Ip);
+    assert_eq!(auto_detect_ioc_type("10.0.0.0/8"), UniversalIocType::Cidr);
+    assert_eq!(auto_detect_ioc_type("fe80::/64"), UniversalIocType::Cidr);
+    assert_eq!(auto_detect_ioc_type("evil-c2.darknet.org"), UniversalIocType::Domain);
+    assert_eq!(auto_detect_ioc_type("https://phishing.site/login.php?id=9"), UniversalIocType::Url);
+    assert_eq!(auto_detect_ioc_type("badactor@threat.com"), UniversalIocType::Email);
+    assert_eq!(auto_detect_ioc_type("d41d8cd98f00b204e9800998ecf8427e"), UniversalIocType::Hash);
+    assert_eq!(
+        auto_detect_ioc_type("da39a3ee5e6b4b0d3255bfef95601890afd80709"),
+        UniversalIocType::Hash
+    );
+    assert_eq!(
+        auto_detect_ioc_type("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"),
+        UniversalIocType::Hash
+    );
+    assert_eq!(
+        auto_detect_ioc_type("HKLM\\Software\\Microsoft\\Windows\\CurrentVersion\\Run"),
+        UniversalIocType::RegistryKey
+    );
+    assert_eq!(auto_detect_ioc_type("C:\\Windows\\System32\\cmd.exe"), UniversalIocType::Path);
+    assert_eq!(auto_detect_ioc_type("mimikatz.exe"), UniversalIocType::ProcessName);
+    assert_eq!(auto_detect_ioc_type("evil_document.docx"), UniversalIocType::Filename);
+    assert_eq!(
+        auto_detect_ioc_type("6ba7b810-9dad-11d1-80b4-00c04fd430c8"),
+        UniversalIocType::Guid
+    );
+    assert_eq!(auto_detect_ioc_type("regex:^admin_.*"), UniversalIocType::Regex);
+    assert_eq!(auto_detect_ioc_type("powershell.exe -enc AAAA"), UniversalIocType::CommandLine);
+}
+
+#[test]
+fn test_cidr_matching_logic() {
+    let cidr = CidrMatcher::parse("192.168.0.0/16").expect("valid cidr");
+    assert!(cidr.contains_str("192.168.1.50"));
+    assert!(cidr.contains_str("192.168.254.1"));
+    assert!(!cidr.contains_str("192.169.0.1"));
+    assert!(!cidr.contains_str("10.0.0.1"));
+}
+
+#[test]
+fn test_json_leaf_flattening() {
+    let raw = json!({
+        "time": "2026-10-23T20:00:00Z",
+        "actor": {
+            "name": "attacker_user",
+            "ip": "198.51.100.42"
+        },
+        "details": {
+            "command": "powershell.exe -enc AAAA",
+            "flags": [1, 2]
+        }
+    });
+
+    let mut out = HashMap::new();
+    flatten_json_value("", &raw, &mut out);
+
+    assert_eq!(out.get("time").unwrap(), "2026-10-23T20:00:00Z");
+    assert_eq!(out.get("actor.name").unwrap(), "attacker_user");
+    assert_eq!(out.get("actor.ip").unwrap(), "198.51.100.42");
+    assert_eq!(out.get("details.command").unwrap(), "powershell.exe -enc AAAA");
+    assert_eq!(out.get("details.flags[0]").unwrap(), "1");
+
+    let (norm_time, norm_ip, norm_user, _, norm_process, _) = extract_normalized_fields(&out);
+    assert!(norm_time.is_some());
+    assert_eq!(norm_ip.as_deref(), Some("198.51.100.42"));
+    assert_eq!(norm_user.as_deref(), Some("attacker_user"));
+    assert_eq!(norm_process.as_deref(), Some("powershell.exe -enc AAAA"));
+}
+
+#[test]
+fn test_cosmos_jsonl_analytics_and_completeness() {
+    let temp_dir = std::env::temp_dir().join(format!("dfir_cosmos_test_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let jsonl_path = temp_dir.join("cosmos_audit.jsonl");
+    {
+        let mut f = File::create(&jsonl_path).unwrap();
+        // 5 valid Cosmos DB JSONL records
+        writeln!(
+            f,
+            r#"{{"time":"2026-10-23T10:00:00Z","activityId":"act-001","clientIpAddress":"203.0.113.10","operationName":"Read","databaseName":"CustomerDb","collectionName":"Accounts","statusCode":200,"requestCharge":3.5,"duration":12.4,"userAgent":"AzureCosmos/3.0"}}"#
+        ).unwrap();
+        writeln!(
+            f,
+            r#"{{"time":"2026-10-23T10:15:00Z","activityId":"act-002","clientIpAddress":"203.0.113.10","operationName":"Create","databaseName":"CustomerDb","collectionName":"Accounts","statusCode":201,"requestCharge":14.2,"duration":45.1,"userAgent":"AzureCosmos/3.0"}}"#
+        ).unwrap();
+        writeln!(
+            f,
+            r#"{{"time":"2026-10-23T11:00:00Z","activityId":"act-003","clientIpAddress":"198.51.100.88","operationName":"Query","databaseName":"CustomerDb","collectionName":"Orders","statusCode":403,"requestCharge":2.1,"duration":8.0,"userAgent":"curl/7.68.0"}}"#
+        ).unwrap();
+        writeln!(
+            f,
+            r#"{{"time":"2026-10-23T11:30:00Z","activityId":"act-004","clientIpAddress":"198.51.100.88","operationName":"Query","databaseName":"CustomerDb","collectionName":"Orders","statusCode":200,"requestCharge":8.0,"duration":19.2,"userAgent":"curl/7.68.0"}}"#
+        ).unwrap();
+        writeln!(
+            f,
+            r#"{{"time":"2026-10-23T12:00:00Z","activityId":"act-005","clientIpAddress":"192.0.2.1","operationName":"Delete","databaseName":"CustomerDb","collectionName":"Tokens","statusCode":204,"requestCharge":9.5,"duration":22.0,"userAgent":"PostmanRuntime/7.28"}}"#
+        ).unwrap();
+        // 1 deliberately corrupted line to verify non-silent drop
+        writeln!(f, r#"{{"time": "2026-10-23T12:05:00Z", INVALID_JSON_LINE_HERE}}"#).unwrap();
+    }
+
+    let db_path = temp_dir.join("cosmos.sqlite3");
+    let ingest_res = import_stream_into_db(
+        &jsonl_path,
+        &db_path,
+        UniversalFormat::JsonLines,
+        |_, _| {},
+    )
+    .expect("ingestion succeeds");
+
+    assert_eq!(ingest_res.row_count, 5);
+    assert_eq!(ingest_res.failure_count, 1);
+
+    let conn = db::open(&db_path).unwrap();
+
+    // Verify _parse_failures has the exact line recorded
+    let raw_payload: String = conn
+        .query_row(
+            "SELECT raw_payload FROM _parse_failures WHERE record_num = 6",
+            [],
+            |r| r.get(0),
+        )
+        .unwrap();
+    assert!(raw_payload.contains("INVALID_JSON_LINE_HERE"));
+
+    // Verify analytics summary
+    let summary = compute_log_analytics_summary(&conn).expect("analytics succeeds");
+    assert_eq!(summary.total_records, 5);
+    assert_eq!(summary.parse_failures, 1);
+    assert_eq!(summary.min_time.as_deref(), Some("2026-10-23T10:00:00+00:00"));
+    assert_eq!(summary.max_time.as_deref(), Some("2026-10-23T12:00:00+00:00"));
+
+    // RU charge sum: 3.5 + 14.2 + 2.1 + 8.0 + 9.5 = 37.3
+    assert!((summary.total_request_charge_ru.unwrap() - 37.3).abs() < 0.001);
+    assert_eq!(summary.max_request_charge_ru.unwrap(), 14.2);
+
+    // Verify Top IPs
+    assert_eq!(summary.top_ips.len(), 3);
+    assert!(summary.top_ips.iter().any(|(ip, count)| ip == "203.0.113.10" && *count == 2));
+    assert!(summary.top_ips.iter().any(|(ip, count)| ip == "198.51.100.88" && *count == 2));
+
+    // Verify status codes
+    assert!(summary.status_codes.iter().any(|(sc, count)| sc == "200" && *count == 2));
+    assert!(summary.status_codes.iter().any(|(sc, count)| sc == "403" && *count == 1));
+
+    // Verify hourly distribution
+    assert_eq!(summary.hourly_distribution.len(), 3);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_universal_e2e_flow() {
+    let temp_dir = std::env::temp_dir().join(format!("dfir_test_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // 1. Create synthetic JSONL log file with heterogeneous events
+    let jsonl_path = temp_dir.join("test_evidence.jsonl");
+    {
+        let mut f = File::create(&jsonl_path).unwrap();
+        // Record 1: Cloud Auth event
+        writeln!(
+            f,
+            r#"{{"time":"2026-10-23T20:00:00Z","client_ip":"198.51.100.55","user":"admin@corp.local","action":"Sign-in","status":"SUCCESS"}}"#
+        )
+        .unwrap();
+        // Record 2: Windows Process Creation event
+        writeln!(
+            f,
+            r#"{{"time":"2026-10-23T20:05:00Z","host":"WORKSTATION-01","process":"C:\\Windows\\System32\\powershell.exe -enc AAAA","user":"corp\\admin"}}"#
+        )
+        .unwrap();
+        // Record 3: Firewall flow event
+        writeln!(
+            f,
+            r#"{{"timestamp":"2026-10-23T21:10:00Z","src_ip":"10.240.10.88","dst_ip":"198.51.100.55","action":"ACCEPT"}}"#
+        )
+        .unwrap();
+        // Record 4: Deliberately malformed JSON line to test non-silent failure recording
+        writeln!(f, r#"{{"corrupt": true, INVALID_JSON_PAYLOAD"#).unwrap();
+    }
+
+    assert_eq!(detect_format(&jsonl_path).unwrap(), UniversalFormat::JsonLines);
+
+    // 2. Ingest into disk-backed SQLite database
+    let db_path = temp_dir.join("cache.sqlite3");
+    let ingest_res = import_stream_into_db(
+        &jsonl_path,
+        &db_path,
+        UniversalFormat::JsonLines,
+        |_, _| {},
+    )
+    .expect("ingestion succeeds");
+
+    assert_eq!(ingest_res.row_count, 3);
+    assert_eq!(ingest_res.failure_count, 1); // Never silently dropped!
+
+    // Verify failures table
+    let mut conn = db::open(&db_path).unwrap();
+    let failures_count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM _parse_failures", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(failures_count, 1);
+
+    // 3. Add IOCs via universal input (paste & typed)
+    let paste_input = "198.51.100.55\n10.0.0.0/8\npowershell.exe\nregex:.*-enc\\s+.*";
+    let (added, skipped) =
+        insert_bulk_iocs(&mut conn, paste_input, Some("Test Threat IOCs")).unwrap();
+    assert_eq!(added, 4);
+    assert_eq!(skipped, 0);
+
+    // 4. Run Universal IOC Scan across all columns & nested JSON fields
+    let scan_summary =
+        execute_universal_ioc_scan(&mut conn, |_, _| {}).expect("scan succeeds");
+
+    assert_eq!(scan_summary.total_rows_scanned, 3);
+    assert!(scan_summary.total_matches >= 3);
+    assert_eq!(scan_summary.unique_matched_rows, 3);
+    assert_eq!(scan_summary.parse_failures_count, 1);
+
+    // Verify multi-pivot correlation: 198.51.100.55 appeared in both Cloud Auth and Firewall logs!
+    let ip_pivot = scan_summary
+        .correlated_pivots
+        .iter()
+        .find(|p| p.pivot_value == "198.51.100.55");
+    assert!(ip_pivot.is_some(), "IP 198.51.100.55 was correlated across multiple log types");
+
+    // 5. Export to 4-sheet Forensic Reporting Workbook
+    let export_xlsx = temp_dir.join("DFIR_Master_Timeline.xlsx");
+    let export_res = export_forensic_workbook(&conn, &export_xlsx, "Senior Forensic Analyst")
+        .expect("export succeeds");
+
+    assert!(export_res.total_exported_records >= 3);
+    assert!(export_xlsx.exists());
+    assert!(temp_dir.join("DFIR_Master_Timeline.csv").exists());
+    assert!(temp_dir.join("DFIR_Master_Timeline_PARSE_FAILURES.csv").exists());
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

@@ -3219,6 +3219,260 @@ pub async fn get_row_raw_details(
     .map_err(|e| format!("get_row_raw_details join error: {e}"))?
 }
 
+
+#[tauri::command]
+pub async fn add_universal_iocs(
+    raw_content: String,
+    description: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let mut conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        crate::universal_import::create_audit_tables_if_needed(&conn).map_err(|e| e.to_string())?;
+        let (added, skipped) = crate::intel::universal_ioc::insert_bulk_iocs(
+            &mut conn,
+            &raw_content,
+            description.as_deref(),
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(serde_json::json!({
+            "added": added,
+            "skipped": skipped
+        }))
+    })
+    .await
+    .map_err(|e| format!("add_universal_iocs join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn list_universal_iocs(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::intel::universal_ioc::UniversalIocEntry>, String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<crate::intel::universal_ioc::UniversalIocEntry>, String> {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        crate::universal_import::create_audit_tables_if_needed(&conn).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare("SELECT id, ioc_type, value, description, enabled, is_exclusion, added_at FROM _universal_iocs ORDER BY id DESC")
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(crate::intel::universal_ioc::UniversalIocEntry {
+                    id: r.get(0)?,
+                    ioc_type: r.get(1)?,
+                    value: r.get(2)?,
+                    description: r.get(3)?,
+                    enabled: r.get::<_, i64>(4)? != 0,
+                    is_exclusion: r.get::<_, i64>(5)? != 0,
+                    added_at: r.get(6)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut out = Vec::new();
+        for item in rows {
+            out.push(item.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("list_universal_iocs join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn toggle_universal_ioc(
+    id: i64,
+    enabled: bool,
+    is_exclusion: bool,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE _universal_iocs SET enabled = ?1, is_exclusion = ?2 WHERE id = ?3",
+            rusqlite::params![if enabled { 1 } else { 0 }, if is_exclusion { 1 } else { 0 }, id],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("toggle_universal_ioc join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn remove_universal_ioc(
+    id: i64,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<(), String> {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM _universal_iocs WHERE id = ?1", rusqlite::params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("remove_universal_ioc join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn run_universal_ioc_scan(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<crate::intel::universal_ioc::UniversalScanSummary, String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    let app_for_task = app.clone();
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::intel::universal_ioc::UniversalScanSummary, String> {
+        let mut conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        crate::universal_import::create_audit_tables_if_needed(&conn).map_err(|e| e.to_string())?;
+        crate::intel::universal_ioc::execute_universal_ioc_scan(&mut conn, |done, total| {
+            let _ = app_for_task.emit("universal-ioc-progress", serde_json::json!({
+                "done": done,
+                "total": total
+            }));
+        })
+        .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("run_universal_ioc_scan join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_universal_ioc_matches(
+    state: State<'_, AppState>,
+) -> Result<Vec<crate::intel::universal_ioc::IocMatchItem>, String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<Vec<crate::intel::universal_ioc::IocMatchItem>, String> {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT match_id, row_num, ioc_id, ioc_type, ioc_value, matched_field, matched_value,
+                        match_kind, is_suppressed, timestamp_utc, source_file, event_summary, raw_evidence
+                 FROM _ioc_matches ORDER BY match_id ASC",
+            )
+            .map_err(|e| e.to_string())?;
+
+        let rows = stmt
+            .query_map([], |r| {
+                Ok(crate::intel::universal_ioc::IocMatchItem {
+                    match_id: r.get(0)?,
+                    row_num: r.get(1)?,
+                    ioc_id: r.get(2)?,
+                    ioc_type: r.get(3)?,
+                    ioc_value: r.get(4)?,
+                    matched_field: r.get(5)?,
+                    matched_value: r.get(6)?,
+                    match_kind: r.get(7)?,
+                    is_suppressed: r.get::<_, i64>(8)? != 0,
+                    timestamp_utc: r.get(9)?,
+                    source_file: r.get(10)?,
+                    event_summary: r.get(11)?,
+                    raw_evidence: r.get(12)?,
+                })
+            })
+            .map_err(|e| e.to_string())?;
+
+        let mut out = Vec::new();
+        for item in rows {
+            out.push(item.map_err(|e| e.to_string())?);
+        }
+        Ok(out)
+    })
+    .await
+    .map_err(|e| format!("get_universal_ioc_matches join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_ingest_audit(
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        crate::universal_import::create_audit_tables_if_needed(&conn).map_err(|e| e.to_string())?;
+
+        let total_rows: i64 = conn.query_row("SELECT COUNT(*) FROM rows", [], |r| r.get(0)).unwrap_or(0);
+        let failures_count: i64 = conn.query_row("SELECT COUNT(*) FROM _parse_failures", [], |r| r.get(0)).unwrap_or(0);
+        let matches_count: i64 = conn.query_row("SELECT COUNT(*) FROM _ioc_matches", [], |r| r.get(0)).unwrap_or(0);
+        let iocs_count: i64 = conn.query_row("SELECT COUNT(*) FROM _universal_iocs", [], |r| r.get(0)).unwrap_or(0);
+
+        let mut fail_stmt = conn.prepare(
+            "SELECT id, source_path, record_num, raw_payload, error_message, occurred_at FROM _parse_failures ORDER BY id ASC LIMIT 100"
+        ).map_err(|e| e.to_string())?;
+
+        let fail_rows = fail_stmt.query_map([], |r| {
+            Ok(serde_json::json!({
+                "id": r.get::<_, i64>(0)?,
+                "sourcePath": r.get::<_, String>(1)?,
+                "recordNum": r.get::<_, i64>(2)?,
+                "rawPayload": r.get::<_, Option<String>>(3)?,
+                "errorMessage": r.get::<_, String>(4)?,
+                "occurredAt": r.get::<_, String>(5)?,
+            }))
+        }).map_err(|e| e.to_string())?;
+
+        let mut failures = Vec::new();
+        for f in fail_rows {
+            if let Ok(val) = f {
+                failures.push(val);
+            }
+        }
+
+        Ok(serde_json::json!({
+            "totalRows": total_rows,
+            "failuresCount": failures_count,
+            "matchesCount": matches_count,
+            "iocsCount": iocs_count,
+            "failures": failures
+        }))
+    })
+    .await
+    .map_err(|e| format!("get_ingest_audit join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_log_analytics_summary(
+    state: State<'_, AppState>,
+) -> Result<crate::universal_import::LogAnalyticsSummary, String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<crate::universal_import::LogAnalyticsSummary, String> {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        crate::universal_import::compute_log_analytics_summary(&conn).map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| format!("get_log_analytics_summary join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn export_forensic_workbook(
+    dest_path: String,
+    analyst_name: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    let (db_path, _, _) = state_snapshot(&state)?;
+    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+        let res = crate::universal_export::export_forensic_workbook(
+            &conn,
+            Path::new(&dest_path),
+            &analyst_name,
+        )
+        .map_err(|e| e.to_string())?;
+
+        Ok(serde_json::json!({
+            "xlsxPath": res.xlsx_path,
+            "csvTimelinePath": res.csv_timeline_path,
+            "totalExported": res.total_exported_records
+        }))
+    })
+    .await
+    .map_err(|e| format!("export_forensic_workbook join error: {e}"))?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
