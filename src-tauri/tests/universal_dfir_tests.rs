@@ -257,3 +257,149 @@ fn test_universal_e2e_flow() {
     // Cleanup
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_large_scale_jsonl_and_compressed_gz_stress() {
+    use calamine::{open_workbook, Reader, Xlsx};
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use std::io::BufWriter;
+
+    let temp_dir = std::env::temp_dir().join(format!("dfir_stress_{}", std::process::id()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // 1. Generate 5,000 JSONL lines with 20 intentional corrupted lines
+    let jsonl_path = temp_dir.join("large_cloud_audit.jsonl");
+    let total_generated = 5000;
+    let corrupted_count = 20;
+    {
+        let file = File::create(&jsonl_path).unwrap();
+        let mut writer = BufWriter::new(file);
+
+        for i in 1..=total_generated {
+            if i % 250 == 0 {
+                // Intentionally corrupted line
+                writeln!(writer, r#"{{"bad_record_id": {i}, "corrupt": true, UNCLOSED_JSON"#).unwrap();
+            } else {
+                let hour = (i % 24) as u8;
+                let ip_octet = (i % 250) as u8;
+                let status = if i % 10 == 0 { 403 } else if i % 25 == 0 { 500 } else { 200 };
+                let ru = ((i % 15) as f64) * 1.5 + 1.0;
+                let duration = (i % 120) as f64;
+                writeln!(
+                    writer,
+                    r#"{{"time":"2026-10-23T{:02}:15:00Z","activityId":"act-{:05}","clientIpAddress":"198.51.100.{}","operationName":"DataQuery","databaseName":"AuditDb","collectionName":"Events","statusCode":{},"requestCharge":{},"duration":{},"userAgent":"AppClient/1.0"}}"#,
+                    hour, i, ip_octet, status, ru, duration
+                ).unwrap();
+            }
+        }
+        writer.flush().unwrap();
+    }
+
+    // 2. Generate 1,000 compressed JSONL.gz records
+    let gz_path = temp_dir.join("streamed_events.jsonl.gz");
+    {
+        let file = File::create(&gz_path).unwrap();
+        let gz = GzEncoder::new(file, Compression::default());
+        let mut writer = BufWriter::new(gz);
+        for i in 1..=1000 {
+            writeln!(
+                writer,
+                r#"{{"time":"2026-10-23T14:{:02}:00Z","event_id":{},"client_ip":"203.0.113.{}","user":"analyst@example.org","action":"ExportReport"}}"#,
+                i % 60, i, i % 200
+            ).unwrap();
+        }
+        writer.flush().unwrap();
+    }
+
+    assert_eq!(detect_format(&jsonl_path).unwrap(), UniversalFormat::JsonLines);
+    assert_eq!(detect_format(&gz_path).unwrap(), UniversalFormat::CompressedJsonLines);
+
+    // 3. Ingest large JSONL into disk-backed SQLite
+    let db_path = temp_dir.join("stress.sqlite3");
+    let t0 = std::time::Instant::now();
+    let ingest_res = import_stream_into_db(
+        &jsonl_path,
+        &db_path,
+        UniversalFormat::JsonLines,
+        |_, _| {},
+    )
+    .expect("ingest large JSONL succeeds");
+    let ingest_duration = t0.elapsed();
+    println!("Ingested {} records in {:?}", ingest_res.row_count, ingest_duration);
+
+    let expected_valid = total_generated - corrupted_count;
+    assert_eq!(ingest_res.row_count, expected_valid);
+    assert_eq!(ingest_res.failure_count, corrupted_count);
+
+    let mut conn = db::open(&db_path).unwrap();
+
+    // Verify mathematical completeness invariant: total = valid + failures
+    let failures_in_db: i64 = conn
+        .query_row("SELECT COUNT(*) FROM _parse_failures", [], |r| r.get(0))
+        .unwrap();
+    assert_eq!(failures_in_db, corrupted_count);
+
+    // 4. Ingest compressed GZ directly
+    let db_gz_path = temp_dir.join("gz_test.sqlite3");
+    let gz_res = import_stream_into_db(
+        &gz_path,
+        &db_gz_path,
+        UniversalFormat::CompressedJsonLines,
+        |_, _| {},
+    )
+    .expect("ingest GZ succeeds");
+    assert_eq!(gz_res.row_count, 1000);
+    assert_eq!(gz_res.failure_count, 0);
+
+    // 5. Test Bulk IOC Input with 10 diverse indicators
+    let ioc_payload = "198.51.100.0/24\n198.51.100.42\nDataQuery\nAuditDb\nregex:^act-000[0-9]{2}$\n203.0.113.50";
+    let (added, _) = insert_bulk_iocs(&mut conn, ioc_payload, Some("Stress IOC Set")).unwrap();
+    assert_eq!(added, 6);
+
+    // 6. Benchmark Universal IOC Scan
+    let t_scan = std::time::Instant::now();
+    let scan_res = execute_universal_ioc_scan(&mut conn, |_, _| {}).expect("scan succeeds");
+    let scan_duration = t_scan.elapsed();
+    println!("Scanned {} rows against IOCs in {:?}", scan_res.total_rows_scanned, scan_duration);
+
+    assert_eq!(scan_res.total_rows_scanned, expected_valid);
+    assert!(scan_res.total_matches > 0);
+    assert!(scan_duration.as_secs() < 5, "Scan must complete in under 5 seconds");
+
+    // 7. Test Analytics Summary
+    let summary = compute_log_analytics_summary(&conn).expect("analytics succeeds");
+    assert_eq!(summary.total_records, expected_valid);
+    assert_eq!(summary.parse_failures, corrupted_count);
+    assert!(summary.total_request_charge_ru.unwrap() > 0.0);
+    assert!(!summary.top_ips.is_empty());
+    assert!(!summary.status_codes.is_empty());
+    assert!(!summary.hourly_distribution.is_empty());
+
+    // 8. Export to 4-Sheet Excel Workbook & Verify via Calamine
+    let workbook_path = temp_dir.join("Stress_Forensic_Report.xlsx");
+    let export_res = export_forensic_workbook(&conn, &workbook_path, "Forensic Examiner")
+        .expect("workbook export succeeds");
+    assert!(export_res.total_exported_records > 0);
+
+    let mut xl: Xlsx<_> = open_workbook(&workbook_path).expect("open exported workbook");
+    let sheet_names = xl.sheet_names();
+    assert!(sheet_names.contains(&"MASTER TIMELINE".to_string()));
+    assert!(sheet_names.contains(&"IOC".to_string()));
+    assert!(sheet_names.contains(&"INVENTORY".to_string()));
+    assert!(sheet_names.contains(&"SUSPICIOUS ACCOUNTS".to_string()));
+
+    let master_range = xl.worksheet_range("MASTER TIMELINE").expect("read MASTER TIMELINE");
+    assert!(master_range.height() > 1, "Must have header and data rows");
+    assert_eq!(master_range.get((0, 0)).unwrap().to_string(), "Input Date");
+    assert_eq!(master_range.get((0, 1)).unwrap().to_string(), "Analyst");
+    assert_eq!(master_range.get((0, 2)).unwrap().to_string(), "Date/Time (UTC)");
+
+    let ioc_range = xl.worksheet_range("IOC").expect("read IOC sheet");
+    assert!(ioc_range.height() > 1);
+    assert_eq!(ioc_range.get((0, 0)).unwrap().to_string(), "Type");
+    assert_eq!(ioc_range.get((0, 1)).unwrap().to_string(), "Indicator");
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
