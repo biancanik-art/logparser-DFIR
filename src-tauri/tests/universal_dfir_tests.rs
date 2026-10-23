@@ -96,23 +96,23 @@ fn test_cosmos_jsonl_analytics_and_completeness() {
         // 5 valid Cosmos DB JSONL records
         writeln!(
             f,
-            r#"{{"time":"2026-10-23T10:00:00Z","activityId":"act-001","clientIpAddress":"203.0.113.10","operationName":"Read","databaseName":"CustomerDb","collectionName":"Accounts","statusCode":200,"requestCharge":3.5,"duration":12.4,"userAgent":"AzureCosmos/3.0"}}"#
+            r#"{{"time":"2026-10-23T10:00:00Z","activityId":"act-001","clientIpAddress":"203.0.113.10","operationName":"Read","databaseName":"AuditDb","collectionName":"EventsA","statusCode":200,"requestCharge":3.5,"duration":12.4,"userAgent":"AzureCosmos/3.0"}}"#
         ).unwrap();
         writeln!(
             f,
-            r#"{{"time":"2026-10-23T10:15:00Z","activityId":"act-002","clientIpAddress":"203.0.113.10","operationName":"Create","databaseName":"CustomerDb","collectionName":"Accounts","statusCode":201,"requestCharge":14.2,"duration":45.1,"userAgent":"AzureCosmos/3.0"}}"#
+            r#"{{"time":"2026-10-23T10:15:00Z","activityId":"act-002","clientIpAddress":"203.0.113.10","operationName":"Create","databaseName":"AuditDb","collectionName":"EventsA","statusCode":201,"requestCharge":14.2,"duration":45.1,"userAgent":"AzureCosmos/3.0"}}"#
         ).unwrap();
         writeln!(
             f,
-            r#"{{"time":"2026-10-23T11:00:00Z","activityId":"act-003","clientIpAddress":"198.51.100.88","operationName":"Query","databaseName":"CustomerDb","collectionName":"Orders","statusCode":403,"requestCharge":2.1,"duration":8.0,"userAgent":"curl/7.68.0"}}"#
+            r#"{{"time":"2026-10-23T11:00:00Z","activityId":"act-003","clientIpAddress":"198.51.100.88","operationName":"Query","databaseName":"AuditDb","collectionName":"EventsB","statusCode":403,"requestCharge":2.1,"duration":8.0,"userAgent":"curl/7.68.0"}}"#
         ).unwrap();
         writeln!(
             f,
-            r#"{{"time":"2026-10-23T11:30:00Z","activityId":"act-004","clientIpAddress":"198.51.100.88","operationName":"Query","databaseName":"CustomerDb","collectionName":"Orders","statusCode":200,"requestCharge":8.0,"duration":19.2,"userAgent":"curl/7.68.0"}}"#
+            r#"{{"time":"2026-10-23T11:30:00Z","activityId":"act-004","clientIpAddress":"198.51.100.88","operationName":"Query","databaseName":"AuditDb","collectionName":"EventsB","statusCode":200,"requestCharge":8.0,"duration":19.2,"userAgent":"curl/7.68.0"}}"#
         ).unwrap();
         writeln!(
             f,
-            r#"{{"time":"2026-10-23T12:00:00Z","activityId":"act-005","clientIpAddress":"192.0.2.1","operationName":"Delete","databaseName":"CustomerDb","collectionName":"Tokens","statusCode":204,"requestCharge":9.5,"duration":22.0,"userAgent":"PostmanRuntime/7.28"}}"#
+            r#"{{"time":"2026-10-23T12:00:00Z","activityId":"act-005","clientIpAddress":"192.0.2.1","operationName":"Delete","databaseName":"AuditDb","collectionName":"EventsC","statusCode":204,"requestCharge":9.5,"duration":22.0,"userAgent":"PostmanRuntime/7.28"}}"#
         ).unwrap();
         // 1 deliberately corrupted line to verify non-silent drop
         writeln!(f, r#"{{"time": "2026-10-23T12:05:00Z", INVALID_JSON_LINE_HERE}}"#).unwrap();
@@ -180,13 +180,13 @@ fn test_universal_e2e_flow() {
         // Record 1: Cloud Auth event
         writeln!(
             f,
-            r#"{{"time":"2026-10-23T20:00:00Z","client_ip":"198.51.100.55","user":"admin@corp.local","action":"Sign-in","status":"SUCCESS"}}"#
+            r#"{{"time":"2026-10-23T20:00:00Z","client_ip":"198.51.100.55","user":"admin@example.org","action":"Sign-in","status":"SUCCESS"}}"#
         )
         .unwrap();
         // Record 2: Windows Process Creation event
         writeln!(
             f,
-            r#"{{"time":"2026-10-23T20:05:00Z","host":"WORKSTATION-01","process":"C:\\Windows\\System32\\powershell.exe -enc AAAA","user":"corp\\admin"}}"#
+            r#"{{"time":"2026-10-23T20:05:00Z","host":"HOST-01","process":"C:\\Windows\\System32\\powershell.exe -enc AAAA","user":"domain\\user"}}"#
         )
         .unwrap();
         // Record 3: Firewall flow event
@@ -246,7 +246,7 @@ fn test_universal_e2e_flow() {
 
     // 5. Export to 4-sheet Forensic Reporting Workbook
     let export_xlsx = temp_dir.join("DFIR_Master_Timeline.xlsx");
-    let export_res = export_forensic_workbook(&conn, &export_xlsx, "Senior Forensic Analyst")
+    let export_res = export_forensic_workbook(&conn, &export_xlsx, "Forensic Analyst")
         .expect("export succeeds");
 
     assert!(export_res.total_exported_records >= 3);
