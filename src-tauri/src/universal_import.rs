@@ -139,9 +139,15 @@ pub fn flatten_json_value(prefix: &str, value: &Value, out: &mut HashMap<String,
             }
         }
         Value::Array(arr) => {
-            for (idx, item) in arr.iter().enumerate() {
-                let key = format!("{prefix}[{idx}]");
-                flatten_json_value(&key, item, out);
+            if !prefix.is_empty() {
+                out.insert(prefix.to_string(), serde_json::to_string(arr).unwrap_or_default());
+            }
+            // For compact arrays (<= 5 elements), also allow leaf indexing
+            if arr.len() <= 5 {
+                for (idx, item) in arr.iter().enumerate() {
+                    let key = format!("{prefix}[{idx}]");
+                    flatten_json_value(&key, item, out);
+                }
             }
         }
         Value::String(s) => {
@@ -316,6 +322,12 @@ pub fn import_stream_into_db(
         if !all_headers.contains(col) {
             all_headers.push(col.clone());
         }
+    }
+
+    // Safety: Cap SQL table columns to prevent SQLite column overflow (SQLITE_MAX_COLUMN)
+    const MAX_TABLE_COLUMNS: usize = 350;
+    if all_headers.len() > MAX_TABLE_COLUMNS {
+        all_headers.truncate(MAX_TABLE_COLUMNS);
     }
 
     let columns = sanitize_headers(&all_headers);
@@ -582,16 +594,43 @@ fn open_record_stream(
             let items: Vec<Value> = match root_val {
                 Value::Array(arr) => arr,
                 Value::Object(map) => {
-                    if let Some(Value::Array(arr)) = map
-                        .get("value")
-                        .or_else(|| map.get("records"))
-                        .or_else(|| map.get("events"))
-                        .or_else(|| map.get("data"))
-                    {
-                        arr.clone()
-                    } else {
-                        vec![Value::Object(map)]
+                    let candidate_keys = [
+                        "value", "records", "events", "data", "items", "logs",
+                        "logentries", "entries", "rows", "results", "hits", "messages",
+                    ];
+                    let mut found_arr = None;
+                    for (k, v) in &map {
+                        let lk = k.to_ascii_lowercase();
+                        if candidate_keys.contains(&lk.as_str()) {
+                            if let Value::Array(arr) = v {
+                                found_arr = Some(arr.clone());
+                                break;
+                            } else if let Value::Object(submap) = v {
+                                for (_, sv) in submap {
+                                    if let Value::Array(subarr) = sv {
+                                        found_arr = Some(subarr.clone());
+                                        break;
+                                    }
+                                }
+                                if found_arr.is_some() {
+                                    break;
+                                }
+                            }
+                        }
                     }
+
+                    if found_arr.is_none() {
+                        for (_, v) in &map {
+                            if let Value::Array(arr) = v {
+                                if !arr.is_empty() && arr.iter().any(|item| item.is_object()) {
+                                    found_arr = Some(arr.clone());
+                                    break;
+                                }
+                            }
+                        }
+                    }
+
+                    found_arr.unwrap_or_else(|| vec![Value::Object(map)])
                 }
                 other => vec![other],
             };

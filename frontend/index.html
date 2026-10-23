@@ -167,26 +167,6 @@
           </div>
         </div>
         <div class="correlation-scroll-area">
-          <!-- Architecture Note Banner -->
-          <div class="correlation-intro-banner">
-            <div class="banner-icon">💡</div>
-            <div class="banner-text">
-              <strong>Schema-Preserving Cross-Log Correlation:</strong> Disparate log sources (e.g. M365 UAL, Firewall, Sysmon, VPN) have different column schemas. Rather than collapsing them into a lossy merged table with mostly empty columns, log-parser queries all open files in parallel: search any entity across all logs, and discover shared indicators (co-occurrence) across evidence files.
-            </div>
-          </div>
-
-          <!-- Open Files in Scope -->
-          <details id="correlation-files-details" class="correlation-section correlation-collapsible" open>
-            <summary class="correlation-summary-toggle">
-              <span class="correlation-summary-title">📂 Open Files in Correlation Scope</span>
-              <span id="correlation-file-count" class="correlation-count-badge">0 files</span>
-              <span class="correlation-toggle-hint">(click to collapse/expand list)</span>
-            </summary>
-            <div id="correlation-files-list" class="correlation-files-list">
-              <div class="correlation-empty-state">No files open. Use "Open File" to load 2 or more files.</div>
-            </div>
-          </details>
-
           <!-- Section 1: Global Pivot Search & Batch Indicator Hunting -->
           <div class="correlation-section">
             <div class="correlation-section-header">

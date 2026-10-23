@@ -5695,7 +5695,8 @@
       }
     }
 
-    correlationFileCount.textContent = `${count} open file${count === 1 ? "" : "s"}`;
+    if (correlationFileCount) { correlationFileCount.textContent = `${count} open file${count === 1 ? "" : "s"}`; }
+    if (correlationFilesList) {
     correlationFilesList.innerHTML = "";
 
     if (count === 0) {
@@ -5734,6 +5735,7 @@
       }
       correlationFilesList.appendChild(card);
     });
+    }
   }
 
   async function runCrossFileSearch(query) {

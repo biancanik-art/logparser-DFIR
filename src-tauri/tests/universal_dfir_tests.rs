@@ -541,3 +541,54 @@ fn test_multi_file_real_correlation_exfiltration_and_communication() {
     // Clean up
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_single_json_document_with_large_arrays_and_many_keys() {
+    let temp_dir = std::env::temp_dir().join(format!("dfir_json_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let json_file_path = temp_dir.join("single_export.json");
+    let db_path = temp_dir.join("single_export.db");
+
+    // Create a JSON document with a collection key ("Records") containing 25 records,
+    // plus arrays with multiple items and dozens of fields.
+    let mut records = Vec::new();
+    for i in 0..25 {
+        let mut rec = serde_json::Map::new();
+        rec.insert("EventTime".to_string(), serde_json::json!("2026-10-24T02:00:00Z"));
+        rec.insert("SourceIP".to_string(), serde_json::json!(format!("198.51.100.{}", i + 10)));
+        rec.insert("User".to_string(), serde_json::json!("admin_user"));
+        rec.insert("Tags".to_string(), serde_json::json!(["tagA", "tagB", "tagC", "tagD", "tagE", "tagF", "tagG"]));
+        for k in 0..40 {
+            rec.insert(format!("Attribute_{k}"), serde_json::json!(format!("val_{}_{k}", i)));
+        }
+        records.push(serde_json::Value::Object(rec));
+    }
+
+    let root_doc = serde_json::json!({
+        "Records": records,
+        "format_version": "1.0",
+        "description": "Enterprise cloud security export"
+    });
+
+    std::fs::write(&json_file_path, root_doc.to_string()).unwrap();
+
+    let format = detect_format(&json_file_path).unwrap();
+    assert_eq!(format, UniversalFormat::Json);
+
+    // Ingest into SQLite database - MUST NOT fail with "too many columns on rows"
+    let ingest_res = import_stream_into_db(
+        &json_file_path,
+        &db_path,
+        format,
+        |_, _| {},
+    ).expect("Single JSON import must succeed without exceeding SQLite column limit");
+
+    assert_eq!(ingest_res.row_count, 25, "All 25 records must be unpacked as separate rows");
+    assert_eq!(ingest_res.failure_count, 0);
+    assert!(ingest_res.columns.len() <= 350, "Columns must be safely bounded");
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
