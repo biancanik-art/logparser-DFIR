@@ -592,3 +592,51 @@ fn test_single_json_document_with_large_arrays_and_many_keys() {
     // Clean up
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_compressed_json_gz_cloudtrail_and_auto_fallback() {
+    use flate2::{write::GzEncoder, Compression};
+    let temp_dir = std::env::temp_dir().join(format!("dfir_jsongz_test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // 1. Create a compressed AWS CloudTrail style .json.gz file (single root JSON with Records array)
+    let gz_path = temp_dir.join("AWSLogs_123456789012_CloudTrail.json.gz");
+    {
+        let f = File::create(&gz_path).unwrap();
+        let mut encoder = GzEncoder::new(f, Compression::default());
+        let cloudtrail_doc = json!({
+            "Records": [
+                {
+                    "eventTime": "2026-10-24T02:30:00Z",
+                    "eventName": "ConsoleLogin",
+                    "sourceIPAddress": "198.51.100.89",
+                    "userIdentity": { "type": "IAMUser", "userName": "alice" }
+                },
+                {
+                    "eventTime": "2026-10-24T02:35:00Z",
+                    "eventName": "GetObject",
+                    "sourceIPAddress": "198.51.100.89",
+                    "userIdentity": { "type": "IAMUser", "userName": "alice" }
+                }
+            ]
+        });
+        encoder.write_all(cloudtrail_doc.to_string().as_bytes()).unwrap();
+        encoder.finish().unwrap();
+    }
+
+    assert_eq!(detect_format(&gz_path).unwrap(), UniversalFormat::CompressedJson);
+
+    let db_path = temp_dir.join("cloudtrail.sqlite3");
+    let ingest_res = import_stream_into_db(
+        &gz_path,
+        &db_path,
+        UniversalFormat::CompressedJson,
+        |_, _| {},
+    ).expect("ingest .json.gz cloudtrail stream");
+
+    assert_eq!(ingest_res.row_count, 2, "Unpacked 2 CloudTrail records from .json.gz");
+    assert_eq!(ingest_res.failure_count, 0);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

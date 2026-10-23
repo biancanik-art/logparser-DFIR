@@ -19,6 +19,7 @@ pub enum UniversalFormat {
     Csv,
     Tsv,
     Json,
+    CompressedJson,
     JsonLines,
     CompressedJsonLines,
     Evtx,
@@ -40,6 +41,10 @@ pub fn detect_format(path: &Path) -> Result<UniversalFormat> {
         .and_then(|f| f.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
+
+    if file_name.ends_with(".json.gz") {
+        return Ok(UniversalFormat::CompressedJson);
+    }
 
     if file_name.ends_with(".jsonl.gz") || file_name.ends_with(".log.gz") || file_name.ends_with(".gz") {
         return Ok(UniversalFormat::CompressedJsonLines);
@@ -587,10 +592,23 @@ fn open_record_stream(
             Ok(Box::new(LineRecordStream::new(file, format)))
         }
         UniversalFormat::Evtx => Ok(Box::new(EvtxRecordStream::new(source_path)?)),
-        UniversalFormat::Json => {
+        UniversalFormat::Json | UniversalFormat::CompressedJson => {
             let file = File::open(source_path)?;
-            let reader = BufReader::new(file);
-            let root_val: Value = serde_json::from_reader(reader)?;
+            let root_val: Value = if format == UniversalFormat::CompressedJson {
+                let gz = GzDecoder::new(file);
+                let reader = BufReader::new(gz);
+                match serde_json::from_reader(reader) {
+                    Ok(val) => val,
+                    Err(_) => {
+                        let file2 = File::open(source_path)?;
+                        let gz2 = GzDecoder::new(file2);
+                        return Ok(Box::new(LineRecordStream::new(gz2, UniversalFormat::CompressedJsonLines)));
+                    }
+                }
+            } else {
+                let reader = BufReader::new(file);
+                serde_json::from_reader(reader)?
+            };
             let items: Vec<Value> = match root_val {
                 Value::Array(arr) => arr,
                 Value::Object(map) => {
