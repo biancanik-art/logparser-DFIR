@@ -129,6 +129,19 @@
   const correlationFilesList = document.getElementById("correlation-files-list");
   const correlationRefreshBtn = document.getElementById("correlation-refresh-btn");
   const correlationMaximizeBtn = document.getElementById("correlation-maximize-btn");
+  const crossModeSingleBtn = document.getElementById("cross-mode-single-btn");
+  const crossModeBatchBtn = document.getElementById("cross-mode-batch-btn");
+  const crossSingleSearchPanel = document.getElementById("cross-single-search-panel");
+  const crossBatchSearchPanel = document.getElementById("cross-batch-search-panel");
+  const crossBatchInput = document.getElementById("cross-batch-input");
+  const crossBatchSearchBtn = document.getElementById("cross-batch-search-btn");
+  const crossBatchImportBtn = document.getElementById("cross-batch-import-btn");
+  const crossBatchFileInput = document.getElementById("cross-batch-file-input");
+  const crossBatchExportBtn = document.getElementById("cross-batch-export-btn");
+  const crossBatchClearBtn = document.getElementById("cross-batch-clear-btn");
+  const crossBatchCountHint = document.getElementById("cross-batch-count-hint");
+  const correlationAnalyticsBtn = document.getElementById("correlation-analytics-btn");
+  const correlationForensicExportBtn = document.getElementById("correlation-forensic-export-btn");
   const crossSearchInput = document.getElementById("cross-search-input");
   const crossSearchBtn = document.getElementById("cross-search-btn");
   const crossSearchClearBtn = document.getElementById("cross-search-clear-btn");
@@ -532,15 +545,17 @@
     updateGuidedInteractionControls();
   }
 
-  function resetIntelUiState() {
+  function resetIntelUiState(forceResetIntel = false) {
     resetGuidedQueryUi();
     gridFilterDescription = null;
     if (gridActiveFilterBar) gridActiveFilterBar.classList.add("hidden");
     columnRoleSuggestions = [];
     timestampAnalysis = null;
     timestampNormalizationSummary = null;
-    intelScanSummaryResult = null;
-    reportSummaryResult = null;
+    if (forceResetIntel || loadedFiles.length === 0) {
+      intelScanSummaryResult = null;
+      reportSummaryResult = null;
+    }
     roleDetectionInFlight = false;
     roleDetectionError = null;
     activeRoleDetectionRequest = null;
@@ -629,7 +644,9 @@
       iocResultsContent.innerHTML = "";
     }
 
-    renderScanSummary(null);
+    if (forceResetIntel || loadedFiles.length === 0) {
+      renderScanSummary(null);
+    }
     updateEvidenceColumnsUi();
   }
 
@@ -1977,7 +1994,7 @@
         chip.addEventListener("click", () => {
           const targetIdx = (loadedFiles || []).findIndex(f => f.path === fb.path);
           if (targetIdx !== -1 && targetIdx !== activeFileIndex) {
-            switchActiveFile(targetIdx);
+            switchLoadedFile(targetIdx);
           }
         });
         fileChips.appendChild(chip);
@@ -5813,6 +5830,253 @@
 
       crossSearchResults.appendChild(card);
     });
+
+    if (totalHits > 0) {
+      const bottomBar = document.createElement("div");
+      bottomBar.style.cssText = "display:flex; align-items:center; justify-content:space-between; margin-top:12px; padding:10px 14px; background:var(--panel-subtle); border:1px solid var(--border); border-radius:6px;";
+      bottomBar.innerHTML = `
+        <span style="font-weight:600; font-size:12.5px;">Found ${totalHits.toLocaleString()} match${totalHits === 1 ? "" : "es"} across ${results.filter(r => r.matchCount > 0).length} file(s)</span>
+        <button id="cross-view-unified-btn" class="btn btn-primary btn-small">🌐 View All Matches in Unified Grid</button>
+      `;
+      const viewUnifiedBtn = bottomBar.querySelector("#cross-view-unified-btn");
+      if (viewUnifiedBtn) {
+        viewUnifiedBtn.addEventListener("click", async () => {
+          const filesPayload = loadedFiles.map((f) => ({
+            path: f.path,
+            sheet: f.sheet || null,
+            cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
+          }));
+          showProgress(`Loading unified cross-file events for "${query}"...`, 0.5);
+          try {
+            const evts = await invoke("get_unified_ioc_events", {
+              files: filesPayload,
+              iocValue: query,
+            });
+            hideProgress();
+            if (evts && evts.length > 0) {
+              renderUnifiedCorrelatedGrid(evts, `Cross-File Match: "${query}"`);
+            } else {
+              alert("No detailed timeline events found.");
+            }
+          } catch (err) {
+            hideProgress();
+            alert(`Failed to load unified timeline: ${err}`);
+          }
+        });
+      }
+      crossSearchResults.prepend(bottomBar);
+    }
+  }
+
+  let latestBatchResults = [];
+
+  function parseBatchIndicatorsFromText(text) {
+    if (!text) return [];
+    return text
+      .split(/[\r\n,]+/)
+      .map((t) => t.trim())
+      .filter((t) => t.length > 0 && !t.startsWith("#"));
+  }
+
+  async function runCrossBatchSearch() {
+    if (!crossBatchInput) return;
+    const indicators = parseBatchIndicatorsFromText(crossBatchInput.value);
+    if (indicators.length === 0) {
+      alert("Please paste or import at least one indicator (IP, hash, domain, or keyword).");
+      return;
+    }
+    if (loadedFiles.length === 0) {
+      crossSearchStatus.textContent = "No log files loaded to search. Use 'Open File' to load logs first.";
+      crossSearchStatus.classList.remove("hidden");
+      return;
+    }
+
+    crossSearchStatus.textContent = `Searching ${indicators.length} indicators across ${loadedFiles.length} files...`;
+    crossSearchStatus.classList.remove("hidden");
+    crossSearchResults.innerHTML = "";
+    crossSearchClearBtn?.classList.remove("hidden");
+
+    try {
+      const filesPayload = loadedFiles.map((f) => ({
+        path: f.path,
+        sheet: f.sheet || null,
+        cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
+      }));
+
+      // Also register into backend universal_ioc so forensic export contains them
+      try {
+        await invoke("add_universal_iocs", {
+          rawContent: indicators.join("\n"),
+          description: "Batch Multi-Log Search",
+        });
+      } catch (_) {}
+
+      const results = await invoke("cross_search_batch_files", {
+        files: filesPayload,
+        indicators,
+      });
+
+      latestBatchResults = results || [];
+      if (crossBatchExportBtn) {
+        crossBatchExportBtn.disabled = (latestBatchResults.length === 0);
+      }
+      if (correlationForensicExportBtn) {
+        correlationForensicExportBtn.disabled = (latestBatchResults.length === 0);
+      }
+
+      renderBatchSearchResults(latestBatchResults, indicators.length);
+    } catch (err) {
+      console.error("cross_search_batch_files error", err);
+      crossSearchStatus.textContent = `Batch search failed: ${err}`;
+    }
+  }
+
+  function renderBatchSearchResults(results, totalQueried) {
+    crossSearchResults.innerHTML = "";
+    const matchedItems = results.filter((r) => r.totalMatches > 0);
+    const totalHitCount = results.reduce((acc, r) => acc + (r.totalMatches || 0), 0);
+
+    crossSearchStatus.textContent = `Batch Results: ${matchedItems.length} of ${totalQueried} indicators matched (${totalHitCount.toLocaleString()} total event hits across open files).`;
+    crossSearchStatus.classList.remove("hidden");
+
+    if (results.length === 0) {
+      crossSearchResults.innerHTML = `<div class="correlation-empty-state">No matching events found across files.</div>`;
+      return;
+    }
+
+    if (matchedItems.length > 0) {
+      const topBar = document.createElement("div");
+      topBar.style.cssText = "display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding:10px 14px; background:var(--panel-subtle); border:1px solid var(--border); border-radius:6px; flex-wrap:wrap; gap:8px;";
+      topBar.innerHTML = `
+        <span style="font-weight:600; font-size:13px;">🎯 ${matchedItems.length} indicators found in evidence (${totalHitCount.toLocaleString()} hits)</span>
+        <div style="display:flex; gap:8px;">
+          <button id="batch-view-all-unified-btn" class="btn btn-primary btn-small">🌐 View All Batch Hits in Unified Grid</button>
+          <button id="batch-export-btn" class="btn btn-small">📥 Export Forensic Workbook (.xlsx)</button>
+        </div>
+      `;
+
+      const viewAllUnifiedBtn = topBar.querySelector("#batch-view-all-unified-btn");
+      if (viewAllUnifiedBtn) {
+        viewAllUnifiedBtn.addEventListener("click", async () => {
+          const filesPayload = loadedFiles.map((f) => ({
+            path: f.path,
+            sheet: f.sheet || null,
+            cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
+          }));
+          const matchedInds = matchedItems.map((m) => m.indicator);
+          showProgress("Loading unified cross-file events for batch hits...", 0.5);
+          try {
+            const evts = await invoke("get_unified_batch_events", {
+              files: filesPayload,
+              indicators: matchedInds,
+            });
+            hideProgress();
+            if (evts && evts.length > 0) {
+              renderUnifiedCorrelatedGrid(evts, `Batch Multi-IOC Findings (${matchedInds.length} indicators)`);
+            } else {
+              alert("No detailed timeline events found.");
+            }
+          } catch (err) {
+            hideProgress();
+            alert(`Failed to load unified timeline: ${err}`);
+          }
+        });
+      }
+
+      const batchExportBtn = topBar.querySelector("#batch-export-btn");
+      if (batchExportBtn) {
+        batchExportBtn.addEventListener("click", exportBatchForensicWorkbook);
+      }
+
+      crossSearchResults.appendChild(topBar);
+    }
+
+    results.forEach((item) => {
+      const card = document.createElement("div");
+      card.className = `cross-file-result-card${item.totalMatches > 0 ? " has-matches" : ""}`;
+      card.style.marginBottom = "8px";
+
+      const isHit = item.totalMatches > 0;
+      const typeBadge = `<span style="font-size:10.5px; padding:2px 6px; border-radius:4px; background:var(--accent-soft); color:var(--accent); font-weight:600; text-transform:uppercase;">${escapeHtml(item.indicatorType || 'IOC')}</span>`;
+      const matchBadge = `<span class="cross-match-badge ${isHit ? "hit" : "zero"}">${isHit ? `${item.totalMatches.toLocaleString()} hits` : "0 matches"}</span>`;
+
+      let filesHtml = "";
+      if (isHit && item.fileHits && item.fileHits.length > 0) {
+        filesHtml = `<div style="display:flex; flex-wrap:wrap; gap:6px; margin-top:8px;">` +
+          item.fileHits.map(h => `
+            <span style="font-size:11px; padding:3px 8px; border-radius:4px; background:var(--bg-app); border:1px solid var(--border); display:inline-flex; align-items:center; gap:4px;">
+              📄 <strong>${escapeHtml(h.fileName)}</strong>: <span style="color:#f59e0b; font-weight:600;">${h.matchCount.toLocaleString()} rows</span>
+            </span>
+          `).join("") +
+          `</div>`;
+      }
+
+      card.innerHTML = `
+        <div class="cross-result-header">
+          <div style="display:flex; align-items:center; gap:8px;">
+            ${typeBadge}
+            <span style="font-family:ui-monospace, Consolas, monospace; font-weight:600; font-size:13px; color:var(--text-main);">${escapeHtml(item.indicator)}</span>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
+            ${matchBadge}
+            ${isHit ? `<button class="btn btn-small btn-view-indicator-unified" data-indicator="${escapeHtml(item.indicator)}" title="View in chronological Unified Grid">🌐 View in Unified Grid</button>` : ""}
+          </div>
+        </div>
+        ${filesHtml}
+      `;
+
+      const viewIndBtn = card.querySelector(".btn-view-indicator-unified");
+      if (viewIndBtn) {
+        viewIndBtn.addEventListener("click", async () => {
+          const filesPayload = loadedFiles.map((f) => ({
+            path: f.path,
+            sheet: f.sheet || null,
+            cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
+          }));
+          showProgress(`Loading unified events for "${item.indicator}"...`, 0.5);
+          try {
+            const evts = await invoke("get_unified_ioc_events", {
+              files: filesPayload,
+              iocValue: item.indicator,
+            });
+            hideProgress();
+            if (evts && evts.length > 0) {
+              renderUnifiedCorrelatedGrid(evts, `Indicator: "${item.indicator}" (${item.indicatorType})`);
+            } else {
+              alert("No events found.");
+            }
+          } catch (err) {
+            hideProgress();
+            alert(`Failed: ${err}`);
+          }
+        });
+      }
+
+      crossSearchResults.appendChild(card);
+    });
+  }
+
+  async function exportBatchForensicWorkbook() {
+    try {
+      const defaultName = `forensic_investigation_workbook_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const savePath = await invoke("plugin:dialog|save", {
+        options: {
+          defaultPath: defaultName,
+          filters: [{ name: "Excel Workbook (*.xlsx)", extensions: ["xlsx"] }],
+        },
+      });
+      if (!savePath) return;
+      showProgress("Exporting forensic workbook & timeline...", 0.5);
+      const res = await invoke("export_forensic_workbook", {
+        destPath: savePath,
+        analystName: "DFIR Examiner",
+      });
+      hideProgress();
+      alert(`Forensic Workbook Export Complete!\n\nExcel: ${res.xlsxPath}\nCSV Timeline: ${res.csvTimelinePath}\nTotal Records: ${res.totalExported}`);
+    } catch (err) {
+      hideProgress();
+      alert(`Export failed: ${err}`);
+    }
   }
 
   async function runCrossIocScan() {
@@ -6480,6 +6744,12 @@
         runCrossIocScan();
       }
     }
+
+    if (tabId === "tab-enrichment") {
+      if (intelScanSummaryResult && intelScanSummary && intelScanSummary.children.length === 0) {
+        renderScanSummary(intelScanSummaryResult);
+      }
+    }
   }
 
   if (typeof document.querySelectorAll === "function") {
@@ -6568,6 +6838,89 @@
       crossSearchStatus.classList.add("hidden");
       crossSearchClearBtn.classList.add("hidden");
       crossSearchResultsData = null;
+    });
+  }
+
+  // Batch search wiring
+  if (crossModeSingleBtn && crossModeBatchBtn) {
+    crossModeSingleBtn.addEventListener("click", () => {
+      crossModeSingleBtn.classList.add("active");
+      crossModeBatchBtn.classList.remove("active");
+      crossSingleSearchPanel?.classList.remove("hidden");
+      crossBatchSearchPanel?.classList.add("hidden");
+    });
+
+    crossModeBatchBtn.addEventListener("click", () => {
+      crossModeBatchBtn.classList.add("active");
+      crossModeSingleBtn.classList.remove("active");
+      crossBatchSearchPanel?.classList.remove("hidden");
+      crossSingleSearchPanel?.classList.add("hidden");
+    });
+  }
+
+  if (crossBatchInput) {
+    crossBatchInput.addEventListener("input", () => {
+      const items = parseBatchIndicatorsFromText(crossBatchInput.value);
+      if (crossBatchCountHint) {
+        crossBatchCountHint.textContent = `${items.length} indicator${items.length === 1 ? "" : "s"} detected`;
+      }
+    });
+  }
+
+  if (crossBatchSearchBtn) {
+    crossBatchSearchBtn.addEventListener("click", () => runCrossBatchSearch());
+  }
+
+  if (crossBatchImportBtn && crossBatchFileInput) {
+    crossBatchImportBtn.addEventListener("click", () => {
+      crossBatchFileInput.click();
+    });
+
+    crossBatchFileInput.addEventListener("change", (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = (evt) => {
+        const text = evt.target.result;
+        if (crossBatchInput.value.trim().length > 0) {
+          crossBatchInput.value += "\n" + text;
+        } else {
+          crossBatchInput.value = text;
+        }
+        const items = parseBatchIndicatorsFromText(crossBatchInput.value);
+        if (crossBatchCountHint) {
+          crossBatchCountHint.textContent = `${items.length} indicators detected (loaded ${file.name})`;
+        }
+      };
+      reader.readAsText(file);
+    });
+  }
+
+  if (crossBatchClearBtn) {
+    crossBatchClearBtn.addEventListener("click", () => {
+      if (crossBatchInput) crossBatchInput.value = "";
+      if (crossBatchCountHint) crossBatchCountHint.textContent = "0 indicators detected";
+      crossSearchResults.innerHTML = "";
+      crossSearchStatus.classList.add("hidden");
+      if (crossBatchExportBtn) crossBatchExportBtn.disabled = true;
+    });
+  }
+
+  if (crossBatchExportBtn) {
+    crossBatchExportBtn.addEventListener("click", exportBatchForensicWorkbook);
+  }
+  if (correlationForensicExportBtn) {
+    correlationForensicExportBtn.addEventListener("click", exportBatchForensicWorkbook);
+  }
+
+  if (correlationAnalyticsBtn) {
+    correlationAnalyticsBtn.addEventListener("click", () => {
+      const btn = document.getElementById("view-u-analytics-btn");
+      if (btn) {
+        btn.click();
+      } else {
+        openAnalyticsModal();
+      }
     });
   }
   if (crossIocScanBtn) {
@@ -7869,7 +8222,7 @@
       <tr style="border-bottom:1px solid var(--border-color); ${!ioc.enabled ? "opacity:0.5;" : ""}">
         <td style="padding:6px 8px;"><span class="badge" style="font-size:10px; background:var(--bg-accent); padding:2px 6px; border-radius:3px;">${escapeHtml(ioc.iocType)}</span></td>
         <td style="padding:6px 8px; font-family:monospace; font-size:11px; word-break:break-all;">${escapeHtml(ioc.value)}</td>
-        <td style="padding:6px 8px; color:var(--text-muted); font-size:11px;">${escapeHtml(ioc.description || "â€”")}</td>
+        <td style="padding:6px 8px; color:var(--text-muted); font-size:11px;">${escapeHtml(ioc.description || "—")}</td>
         <td style="padding:6px 8px; text-align:center;">
           <input type="checkbox" class="u-ioc-toggle-active" data-id="${ioc.id}" ${ioc.enabled ? "checked" : ""} title="Enable or disable this IOC without deleting" />
         </td>
@@ -7877,7 +8230,7 @@
           <input type="checkbox" class="u-ioc-toggle-excl" data-id="${ioc.id}" ${ioc.isExclusion ? "checked" : ""} title="Mark as Allowlist / Exclusion (suppresses alerts while preserving evidence)" />
         </td>
         <td style="padding:6px 8px; text-align:center;">
-          <button class="btn btn-small u-ioc-delete-btn" data-id="${ioc.id}" style="padding:1px 6px; color:#ef4444; font-size:11px;" title="Remove IOC">âœ•</button>
+          <button class="btn btn-small u-ioc-delete-btn" data-id="${ioc.id}" style="padding:1px 6px; color:#ef4444; font-size:11px;" title="Remove IOC">✕</button>
         </td>
       </tr>
     `).join("");
@@ -7929,7 +8282,7 @@
       const desc = (uIocDescInput?.value || "").trim() || null;
       try {
         uAddPastedIocsBtn.disabled = true;
-        uAddPastedIocsBtn.textContent = "Addingâ€¦";
+        uAddPastedIocsBtn.textContent = "Adding...";
         const res = await invoke("add_universal_iocs", { rawContent: text, description: desc });
         uIocPasteBox.value = "";
         await loadUniversalIocsList();
@@ -7938,7 +8291,7 @@
         alert(`Error adding IOCs: ${err}`);
       } finally {
         uAddPastedIocsBtn.disabled = false;
-        uAddPastedIocsBtn.textContent = "âž• Add & Classify";
+        uAddPastedIocsBtn.textContent = "+ Add & Classify";
       }
     });
   }
@@ -7995,7 +8348,7 @@
       }
       try {
         runUScanBtn.disabled = true;
-        runUScanBtn.textContent = "â³ Scanningâ€¦";
+        runUScanBtn.textContent = "Scanning...";
         const summary = await invoke("run_universal_ioc_scan");
         uCurrentMatches = summary.matches || [];
         uCurrentPivots = summary.correlatedPivots || [];
@@ -8018,7 +8371,7 @@
         alert(`Error executing scan: ${err}`);
       } finally {
         runUScanBtn.disabled = false;
-        runUScanBtn.textContent = "ðŸš€ Run IOC Scan";
+        runUScanBtn.textContent = "🚀 Run IOC Scan";
       }
     });
   }
@@ -8069,7 +8422,7 @@
     uMatchesTbody.innerHTML = filtered.map(m => `
       <tr style="border-bottom:1px solid var(--border-color); ${m.isSuppressed ? "opacity:0.6; background:rgba(0,0,0,0.15);" : ""}">
         <td style="padding:6px 8px; font-weight:600;">#${m.rowNum}</td>
-        <td style="padding:6px 8px; font-family:monospace; font-size:11px;">${escapeHtml(m.timestampUtc || "â€”")}</td>
+        <td style="padding:6px 8px; font-family:monospace; font-size:11px;">${escapeHtml(m.timestampUtc || "—")}</td>
         <td style="padding:6px 8px; font-family:monospace; font-weight:bold; color:#38bdf8;">${escapeHtml(m.iocValue)}</td>
         <td style="padding:6px 8px;"><span class="badge" style="font-size:10px; background:var(--bg-accent); padding:2px 5px; border-radius:3px;">${escapeHtml(m.iocType)}</span></td>
         <td style="padding:6px 8px; font-family:monospace; font-size:11px; color:#a78bfa;">${escapeHtml(m.matchedField)}</td>
@@ -8077,12 +8430,12 @@
         <td style="padding:6px 8px;">
           ${m.isSuppressed
             ? `<span style="color:#10b981; font-size:11px; font-weight:600;">Benign (Suppressed)</span>`
-            : `<span style="color:#ef4444; font-size:11px; font-weight:bold;">â— Suspicious</span>`
+            : `<span style="color:#ef4444; font-size:11px; font-weight:bold;">Suspicious</span>`
           }
         </td>
         <td style="padding:6px 8px; font-size:11px;">${escapeHtml(m.eventSummary)}</td>
         <td style="padding:6px 8px; text-align:center;">
-          <button class="btn btn-small u-inspect-evidence-btn" data-row="${m.rowNum}" style="padding:2px 6px; font-size:11px;">ðŸ” Inspect</button>
+          <button class="btn btn-small u-inspect-evidence-btn" data-row="${m.rowNum}" style="padding:2px 6px; font-size:11px;">Inspect</button>
         </td>
       </tr>
     `).join("");
@@ -8113,7 +8466,7 @@
         if (!dest) return;
 
         exportUForensicBtn.disabled = true;
-        exportUForensicBtn.textContent = "Exportingâ€¦";
+        exportUForensicBtn.textContent = "Exporting...";
         const res = await invoke("export_forensic_workbook", {
           destPath: dest,
           analystName: "Forensic Examiner"
@@ -8124,7 +8477,7 @@
         alert(`Export failed: ${err}`);
       } finally {
         exportUForensicBtn.disabled = false;
-        exportUForensicBtn.textContent = "ðŸ“¥ Export Forensic Workbook (.xlsx)";
+        exportUForensicBtn.textContent = "📥 Export Forensic Workbook (.xlsx)";
       }
     });
   }
@@ -8138,7 +8491,7 @@
         uAuditModal.classList.remove("hidden");
         const fails = audit.failures || [];
         if (fails.length === 0) {
-          uAuditFailuresList.innerHTML = `<div style="padding:16px; text-align:center; color:#10b981; font-weight:600;">âœ… Clean Ingestion: Zero parsing failures detected! All ${audit.totalRows.toLocaleString()} records ingested successfully.</div>`;
+          uAuditFailuresList.innerHTML = `<div style="padding:16px; text-align:center; color:#10b981; font-weight:600;">✅ Clean Ingestion: Zero parsing failures detected! All ${audit.totalRows.toLocaleString()} records ingested successfully.</div>`;
         } else {
           uAuditFailuresList.innerHTML = fails.map(f => `
             <div style="background:var(--bg-panel); border:1px solid #ef4444; border-radius:4px; padding:8px 12px; margin-bottom:8px;">
@@ -8293,9 +8646,10 @@
   const origSwitchTab = switchTab;
   switchTab = function(targetTab) {
     origSwitchTab(targetTab);
-    if (targetTab === "tab-universal-ioc") {
-      loadUniversalIocsList();
-      refreshUniversalMetrics();
+    if (targetTab === "tab-enrichment") {
+      if (intelScanSummaryResult && intelScanSummary && intelScanSummary.children.length === 0) {
+        renderScanSummary(intelScanSummaryResult);
+      }
     }
   };
 
@@ -8304,7 +8658,7 @@
     listen("universal-ioc-progress", (evt) => {
       if (runUScanBtn && evt.payload) {
         const p = evt.payload;
-        runUScanBtn.textContent = `â³ Scanning (${p.done.toLocaleString()}${p.total > 0 ? " / " + p.total.toLocaleString() : ""})â€¦`;
+        runUScanBtn.textContent = `Scanning (${p.done.toLocaleString()}${p.total > 0 ? " / " + p.total.toLocaleString() : ""})...`;
       }
     });
   }

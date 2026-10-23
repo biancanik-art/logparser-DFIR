@@ -403,3 +403,52 @@ fn test_large_scale_jsonl_and_compressed_gz_stress() {
     // Clean up
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_cross_file_batch_ioc_and_analyst_prompts() {
+    use log_parser_lib::intel::analyst::{
+        classify_ask, resolve_hunt_patterns, AnalystIntent,
+    };
+
+    // 1. Verify analyst prompt classification
+    assert_eq!(
+        classify_ask("show me exfiltration in all files"),
+        AnalystIntent::Hunt
+    );
+    assert_eq!(
+        classify_ask("show me communication in all files"),
+        AnalystIntent::Hunt
+    );
+    assert_eq!(
+        classify_ask("find c2 communication and external connections"),
+        AnalystIntent::Hunt
+    );
+    assert_eq!(
+        classify_ask("detect beaconing"),
+        AnalystIntent::Hunt
+    );
+    assert_eq!(
+        classify_ask("detect beaconing across files"),
+        AnalystIntent::Chains
+    );
+    assert_eq!(
+        classify_ask("detect breaches across files"),
+        AnalystIntent::Chains
+    );
+
+    // 2. Verify resolve_hunt_patterns covers generic exfiltration and communication
+    let (exfil_topic, exfil_patterns) = resolve_hunt_patterns("show me exfiltration in all files");
+    assert!(exfil_topic.contains("Exfiltration"));
+    assert!(exfil_patterns.iter().any(|p| p.eq_ignore_ascii_case("upload")));
+    assert!(exfil_patterns.iter().any(|p| p.eq_ignore_ascii_case("rclone")));
+    assert!(exfil_patterns.iter().any(|p| p.eq_ignore_ascii_case("curl")));
+    assert!(exfil_patterns.iter().any(|p| p.eq_ignore_ascii_case("T1048")));
+
+    let (comm_topic, comm_patterns) = resolve_hunt_patterns("show me communication in all files");
+    assert!(comm_topic.contains("Communication"));
+    assert!(comm_patterns.iter().any(|p| p.eq_ignore_ascii_case("network")));
+    assert!(comm_patterns.iter().any(|p| p.eq_ignore_ascii_case("connection")));
+    assert!(comm_patterns.iter().any(|p| p.eq_ignore_ascii_case("beacon")));
+    assert!(comm_patterns.iter().any(|p| p.eq_ignore_ascii_case("c2")));
+    assert!(comm_patterns.iter().any(|p| p.eq_ignore_ascii_case("T1071")));
+}

@@ -170,6 +170,19 @@ pub fn classify_ask(text: &str) -> AnalystIntent {
         "escalat",
         "exfiltration",
         "exfiltrat",
+        "communication",
+        "communications",
+        "communicate",
+        "c2",
+        "beacon",
+        "beaconing",
+        "callback",
+        "traffic",
+        "network",
+        "outbound",
+        "tunnel",
+        "connection",
+        "connections",
         "evasion",
         "tamper",
         "brute",
@@ -186,6 +199,16 @@ pub fn classify_ask(text: &str) -> AnalystIntent {
         "data exfiltration",
         "suspicious activity",
         "password reset",
+        "command and control",
+        "external ip",
+        "network traffic",
+        "network connection",
+        "outbound traffic",
+        "c2 communication",
+        "show me exfiltration",
+        "show me communication",
+        "exfiltration in all files",
+        "communication in all files",
     ]);
 
     let has_security_terms = has_word(&[
@@ -1304,6 +1327,8 @@ pub fn resolve_hunt_patterns(ask_text: &str) -> (String, Vec<String>) {
         || lower.contains("data theft")
         || lower.contains("leak")
         || lower.contains("export")
+        || lower.contains("upload")
+        || lower.contains("rclone")
         || lower.contains("mass download");
 
     if has_exfil {
@@ -1317,6 +1342,76 @@ pub fn resolve_hunt_patterns(ask_text: &str) -> (String, Vec<String>) {
             "BulkDownload".to_string(),
             "MailItemsAccessed".to_string(),
             "Download".to_string(),
+            "Upload".to_string(),
+            "exfiltration".to_string(),
+            "exfiltrat".to_string(),
+            "curl".to_string(),
+            "wget".to_string(),
+            "bitsadmin".to_string(),
+            "rclone".to_string(),
+            "megaclient".to_string(),
+            "ftp".to_string(),
+            "scp".to_string(),
+            "sftp".to_string(),
+            "7z".to_string(),
+            "rar".to_string(),
+            "zip".to_string(),
+            "tar".to_string(),
+            "compress".to_string(),
+            "archive".to_string(),
+            "outbound".to_string(),
+            "bytes_sent".to_string(),
+            "bytes_out".to_string(),
+            "POST".to_string(),
+            "T1048".to_string(),
+            "T1041".to_string(),
+            "T1567".to_string(),
+            "T1020".to_string(),
+        ]);
+    }
+
+    let has_comm = lower.contains("communication")
+        || lower.contains("communicate")
+        || lower.contains("c2")
+        || lower.contains("beacon")
+        || lower.contains("beaconing")
+        || lower.contains("callback")
+        || lower.contains("network")
+        || lower.contains("traffic")
+        || lower.contains("outbound")
+        || lower.contains("connection")
+        || lower.contains("connect")
+        || lower.contains("socket")
+        || lower.contains("tunnel")
+        || lower.contains("external ip");
+
+    if has_comm {
+        topics.push("Adversary Communication & Network Traffic");
+        patterns.extend([
+            "Network".to_string(),
+            "Connection".to_string(),
+            "Connect".to_string(),
+            "Traffic".to_string(),
+            "Outbound".to_string(),
+            "External".to_string(),
+            "DNS".to_string(),
+            "Query".to_string(),
+            "Socket".to_string(),
+            "Beacon".to_string(),
+            "C2".to_string(),
+            "Listener".to_string(),
+            "Reverse".to_string(),
+            "Tunnel".to_string(),
+            "HTTP".to_string(),
+            "HTTPS".to_string(),
+            "POST".to_string(),
+            "GET".to_string(),
+            "3".to_string(),
+            "5156".to_string(),
+            "T1071".to_string(),
+            "T1095".to_string(),
+            "T1572".to_string(),
+            "T1573".to_string(),
         ]);
     }
 
@@ -2863,6 +2958,22 @@ pub fn extract_unified_events_for_ioc(
     events
 }
 
+pub fn extract_unified_events_for_indicators(
+    targets: &[FileTarget],
+    indicators: &[String],
+) -> Vec<CorrelatedTimelineEvent> {
+    let clean_indicators: Vec<String> = indicators
+        .iter()
+        .map(|i| i.trim().to_string())
+        .filter(|i| !i.is_empty())
+        .collect();
+    if clean_indicators.is_empty() {
+        return Vec::new();
+    }
+    let (events, _) = collect_events_across_files(targets, &clean_indicators);
+    events
+}
+
 pub fn multi_file_timeline(
     targets: &[FileTarget],
     ask_text: &str,
@@ -3475,6 +3586,10 @@ mod tests {
         assert_eq!(classify_ask("find rogue users"), AnalystIntent::Hunt);
         assert_eq!(classify_ask("find rogue devices"), AnalystIntent::Hunt);
         assert_eq!(classify_ask("detect breaches across files"), AnalystIntent::Chains);
+        assert_eq!(classify_ask("show me exfiltration in all files"), AnalystIntent::Hunt);
+        assert_eq!(classify_ask("show me communication in all files"), AnalystIntent::Hunt);
+        assert_eq!(classify_ask("find c2 communication"), AnalystIntent::Hunt);
+        assert_eq!(classify_ask("beaconing across files"), AnalystIntent::Hunt);
     }
 
     fn fixture() -> (Connection, Vec<ColumnMeta>) {

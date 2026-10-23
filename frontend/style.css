@@ -1579,21 +1579,53 @@ select { font: inherit; }
   color: var(--accent);
 }
 
-.correlation-files-list {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-}
-
-.correlation-file-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 12px;
+.correlation-collapsible {
+  margin-bottom: 12px;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--panel-subtle);
-  font-size: 12px;
+  padding: 8px 12px;
+}
+
+.correlation-summary-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  font-weight: 600;
+  font-size: 13px;
+  user-select: none;
+}
+
+.correlation-summary-title {
+  color: var(--text-main);
+}
+
+.correlation-toggle-hint {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-left: 6px;
+}
+
+.correlation-files-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 110px;
+  overflow-y: auto;
+  margin-top: 8px;
+  padding: 4px;
+}
+
+.correlation-file-card {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--bg-app);
+  font-size: 11.5px;
 }
 
 .correlation-file-card.active {
@@ -1603,7 +1635,7 @@ select { font: inherit; }
 
 .correlation-file-card .file-name-label {
   font-weight: 600;
-  max-width: 220px;
+  max-width: 180px;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1611,7 +1643,21 @@ select { font: inherit; }
 
 .correlation-file-card .file-rows-label {
   color: var(--text-muted);
-  font-size: 11px;
+  font-size: 10.5px;
+}
+
+.cross-batch-panel {
+  margin-top: 8px;
+}
+
+.cross-batch-panel.hidden {
+  display: none !important;
+}
+
+.search-mode-tabs .btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
 }
 
 .cross-search-form {

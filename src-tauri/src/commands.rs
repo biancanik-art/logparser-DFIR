@@ -1756,7 +1756,12 @@ pub async fn ask_analyst(
                 || lower_ask.contains("breach")
                 || lower_ask.contains("rogue")
                 || lower_ask.contains("device")
-                || lower_ask.contains("user");
+                || lower_ask.contains("user")
+                || lower_ask.contains("exfiltration")
+                || lower_ask.contains("communication")
+                || lower_ask.contains("c2")
+                || lower_ask.contains("beacon")
+                || lower_ask.contains("traffic");
 
             if is_cross_file {
                 let targets = target_files.clone();
@@ -2381,6 +2386,144 @@ pub async fn cross_search_files(
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
+pub struct BatchFileHit {
+    pub file_name: String,
+    pub path: String,
+    pub sheet: String,
+    pub match_count: i64,
+    pub sample_row_nums: Vec<i64>,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct BatchIndicatorResult {
+    pub indicator: String,
+    pub indicator_type: String,
+    pub total_matches: i64,
+    pub file_hits: Vec<BatchFileHit>,
+}
+
+#[tauri::command]
+pub async fn cross_search_batch_files(
+    files: Vec<FileTarget>,
+    indicators: Vec<String>,
+) -> Result<Vec<BatchIndicatorResult>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let mut clean_indicators: Vec<String> = Vec::new();
+        for ind in indicators {
+            let trimmed = ind.trim().to_string();
+            if !trimmed.is_empty() && !clean_indicators.iter().any(|existing| existing.eq_ignore_ascii_case(&trimmed)) {
+                clean_indicators.push(trimmed);
+            }
+        }
+
+        if clean_indicators.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut open_dbs = Vec::new();
+        for target in &files {
+            let file_name = Path::new(&target.path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| target.path.clone());
+            let sheet_name = target.sheet.clone().unwrap_or_default();
+            let db_path = if let Some(ref p) = target.cache_db_path {
+                let candidate = PathBuf::from(p);
+                if candidate.exists() {
+                    candidate
+                } else {
+                    db::cache_db_path(Path::new(&target.path), &sheet_name)
+                        .unwrap_or_else(|_| PathBuf::from(p))
+                }
+            } else {
+                match db::cache_db_path(Path::new(&target.path), &sheet_name) {
+                    Ok(p) => p,
+                    Err(_) => continue,
+                }
+            };
+
+            if db_path.exists() {
+                if let Ok(conn) = db::open(&db_path) {
+                    open_dbs.push((target.clone(), file_name, sheet_name, conn));
+                }
+            }
+        }
+
+        let mut results = Vec::with_capacity(clean_indicators.len());
+
+        for indicator in clean_indicators {
+            let detected_type = crate::intel::universal_ioc::auto_detect_ioc_type(&indicator);
+            let escaped = indicator.replace('"', "\"\"");
+            let phrase = format!("\"{escaped}\"");
+            let prefix_phrase = format!("\"{escaped}\"*");
+
+            let mut file_hits = Vec::new();
+            let mut total_matches = 0i64;
+
+            for (target, file_name, sheet_name, conn) in &open_dbs {
+                let mut match_count: i64 = conn
+                    .query_row(
+                        "SELECT count(*) FROM rows_fts WHERE rows_fts MATCH ?1",
+                        [&phrase],
+                        |r| r.get(0),
+                    )
+                    .unwrap_or(0);
+
+                let mut used_phrase = phrase.clone();
+                if match_count == 0 && !indicator.contains(' ') && !indicator.contains('*') {
+                    if let Ok(cnt) = conn.query_row(
+                        "SELECT count(*) FROM rows_fts WHERE rows_fts MATCH ?1",
+                        [&prefix_phrase],
+                        |r| r.get(0),
+                    ) {
+                        if cnt > 0 {
+                            match_count = cnt;
+                            used_phrase = prefix_phrase.clone();
+                        }
+                    }
+                }
+
+                if match_count > 0 {
+                    let mut sample_rows = Vec::new();
+                    if let Ok(mut stmt) =
+                        conn.prepare("SELECT rowid FROM rows_fts WHERE rows_fts MATCH ?1 LIMIT 3")
+                    {
+                        if let Ok(rows) = stmt.query_map([&used_phrase], |r| r.get::<_, i64>(0)) {
+                            sample_rows = rows.filter_map(|r| r.ok()).collect();
+                        }
+                    }
+
+                    total_matches += match_count;
+                    file_hits.push(BatchFileHit {
+                        file_name: file_name.clone(),
+                        path: target.path.clone(),
+                        sheet: sheet_name.clone(),
+                        match_count,
+                        sample_row_nums: sample_rows,
+                    });
+                }
+            }
+
+            results.push(BatchIndicatorResult {
+                indicator,
+                indicator_type: detected_type.as_str().to_string(),
+                total_matches,
+                file_hits,
+            });
+        }
+
+        // Sort descending by total_matches so hits are at top
+        results.sort_by(|a, b| b.total_matches.cmp(&a.total_matches));
+
+        Ok(results)
+    })
+    .await
+    .map_err(|e| format!("cross_search_batch_files join error: {e}"))?
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 pub struct CrossFileIocOccurrence {
     pub file_name: String,
     pub path: String,
@@ -2786,6 +2929,18 @@ pub async fn get_unified_ioc_events(
     })
     .await
     .map_err(|e| format!("get_unified_ioc_events join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn get_unified_batch_events(
+    files: Vec<FileTarget>,
+    indicators: Vec<String>,
+) -> Result<Vec<analyst::CorrelatedTimelineEvent>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        Ok(analyst::extract_unified_events_for_indicators(&files, &indicators))
+    })
+    .await
+    .map_err(|e| format!("get_unified_batch_events join error: {e}"))?
 }
 
 #[tauri::command]
