@@ -1541,7 +1541,7 @@ pub fn find_hunt_rows(
     // 2. Identify prioritized columns first: operation, auditdata, recordtype, command_line, message, etc.
     let text_cols: Vec<&ColumnMeta> = columns
         .iter()
-        .filter(|c| c.inferred_type == "text" || c.inferred_type == "blob")
+        .filter(|c| c.inferred_type != "blob")
         .collect();
 
     let mut prioritized_cols = Vec::new();
@@ -1565,6 +1565,7 @@ pub fn find_hunt_rows(
             || l.contains("device")
             || l.contains("agent")
             || l.contains("target")
+            || l.contains("ip")
         {
             prioritized_cols.push(col);
         } else {
@@ -1893,7 +1894,7 @@ fn find_matching_timeline_rows(
 
     if row_set.is_empty() {
         for col in columns {
-            if col.inferred_type == "text" || col.inferred_type == "blob" {
+            if col.inferred_type != "blob" {
                 let ident = db::quote_ident(&col.sql_name);
                 for kw in keywords {
                     let pattern = format!("%{kw}%");

