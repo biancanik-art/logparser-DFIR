@@ -1303,6 +1303,15 @@
 
     switchTab("tab-grid");
 
+    // In Unified Grid mode, the single-file filter sidebar is not applicable,
+    // so ensure the sidebar and the toggle button stay hidden for maximum table space.
+    if (sidebar) {
+      sidebar.classList.add("collapsed");
+    }
+    if (sidebarToggleBtn) {
+      sidebarToggleBtn.classList.add("hidden");
+    }
+
     const uniqueFiles = new Set(events.map((e) => e.fileName || (e.path ? e.path.split(/[\\/]/).pop() : "File")));
     const fileCount = uniqueFiles.size;
 
@@ -1672,6 +1681,17 @@
     if (pageSizeSelect) pageSizeSelect.disabled = !controlsEnabled;
     resetPagination();
 
+    if (sidebarToggleBtn) {
+      sidebarToggleBtn.classList.remove("hidden");
+    }
+    try {
+      const stored = localStorage.getItem("logparser_sidebar_collapsed");
+      const shouldCollapse = stored !== "false";
+      if (sidebar) {
+        sidebar.classList.toggle("collapsed", shouldCollapse);
+      }
+    } catch (_) {}
+
     if (table && columns.length > 0) {
       await table.setColumns(buildTabulatorColumns());
       await refreshData();
@@ -1692,6 +1712,17 @@
     };
 
     isUnifiedCorrelatedMode = false;
+
+    if (sidebarToggleBtn) {
+      sidebarToggleBtn.classList.remove("hidden");
+    }
+    try {
+      const stored = localStorage.getItem("logparser_sidebar_collapsed");
+      const shouldCollapse = stored !== "false";
+      if (sidebar) {
+        sidebar.classList.toggle("collapsed", shouldCollapse);
+      }
+    } catch (_) {}
 
     const targetIdx = loadedFiles.findIndex(
       (f) => f.path === targetPath || f.name === targetPath || (targetPath && targetPath.endsWith(f.name))
@@ -1727,15 +1758,14 @@
       if (table) {
         table.setFilter((data) => {
           const term = filterSearch.toLowerCase();
-          return (
-            (data.fileName && data.fileName.toLowerCase().includes(term)) ||
-            (data.utcText && data.utcText.toLowerCase().includes(term)) ||
-            (data.user && data.user.toLowerCase().includes(term)) ||
-            (data.host && data.host.toLowerCase().includes(term)) ||
-            (data.action && data.action.toLowerCase().includes(term)) ||
-            (data.details && data.details.toLowerCase().includes(term)) ||
-            (Array.isArray(data.mitreTags) && data.mitreTags.some((t) => t.toLowerCase().includes(term)))
-          );
+          return Object.values(data).some((val) => {
+            if (val === null || val === undefined) return false;
+            if (typeof val === "string") return val.toLowerCase().includes(term);
+            if (typeof val === "number") return String(val).includes(term);
+            if (Array.isArray(val)) return val.some((item) => String(item).toLowerCase().includes(term));
+            if (typeof val === "object") return JSON.stringify(val).toLowerCase().includes(term);
+            return false;
+          });
         });
       }
     }
@@ -7008,16 +7038,43 @@
     });
   }
 
-  // Sidebar toggle
+  // Sidebar toggle & persistent state
+  function isSidebarCollapsed() {
+    return sidebar ? sidebar.classList.contains("collapsed") : true;
+  }
+
+  function setSidebarCollapsed(collapsed, persist = true) {
+    if (!sidebar) return;
+    sidebar.classList.toggle("collapsed", collapsed);
+    if (sidebarToggleBtn) {
+      sidebarToggleBtn.classList.toggle("active", !collapsed);
+      sidebarToggleBtn.title = collapsed ? "Show Filter Sidebar" : "Hide Filter Sidebar";
+    }
+    if (persist) {
+      try {
+        localStorage.setItem("logparser_sidebar_collapsed", collapsed ? "true" : "false");
+      } catch (_) {}
+    }
+    if (table) {
+      setTimeout(() => {
+        try { table.redraw(true); } catch (_) {}
+      }, 50);
+    }
+  }
+
   if (sidebarToggleBtn && sidebar) {
     sidebarToggleBtn.addEventListener("click", () => {
-      sidebar.classList.toggle("collapsed");
-      if (table) {
-        setTimeout(() => {
-          try { table.redraw(true); } catch (_) {}
-        }, 50);
-      }
+      setSidebarCollapsed(!isSidebarCollapsed(), true);
     });
+
+    // Initialize sidebar collapsed state from stored preference (default: collapsed/hidden)
+    try {
+      const stored = localStorage.getItem("logparser_sidebar_collapsed");
+      const shouldCollapse = stored !== "false";
+      setSidebarCollapsed(shouldCollapse, false);
+    } catch (_) {
+      setSidebarCollapsed(true, false);
+    }
   }
 
   // File switcher dropdown
