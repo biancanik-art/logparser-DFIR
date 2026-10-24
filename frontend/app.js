@@ -6179,6 +6179,7 @@
     }
 
     if (correlationFileCount) { correlationFileCount.textContent = `${count} open file${count === 1 ? "" : "s"}`; }
+    if (correlationForensicExportBtn) { correlationForensicExportBtn.disabled = (count === 0); }
     if (correlationFilesList) {
     correlationFilesList.innerHTML = "";
 
@@ -6406,7 +6407,7 @@
         crossBatchExportBtn.disabled = (latestBatchResults.length === 0);
       }
       if (correlationForensicExportBtn) {
-        correlationForensicExportBtn.disabled = (latestBatchResults.length === 0);
+        correlationForensicExportBtn.disabled = (loadedFiles.length === 0);
       }
 
       renderBatchSearchResults(latestBatchResults, indicators.length);
@@ -6551,10 +6552,19 @@
         },
       });
       if (!savePath) return;
-      showProgress("Exporting forensic workbook & timeline...", 0.5);
+      showProgress("Exporting forensic workbook & timeline across loaded files...", 0.5);
+
+      const fileTargets = (loadedFiles || []).map(f => ({
+        path: f.path,
+        sheet: f.sheet || null,
+        cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null
+      }));
+
       const res = await invoke("export_forensic_workbook", {
         destPath: savePath,
         analystName: "DFIR Examiner",
+        files: fileTargets.length > 0 ? fileTargets : null,
+        batchResults: (latestBatchResults && latestBatchResults.length > 0) ? latestBatchResults : null,
       });
       hideProgress();
       alert(`Forensic Workbook Export Complete!\n\nExcel: ${res.xlsxPath}\nCSV Timeline: ${res.csvTimelinePath}\nTotal Records: ${res.totalExported}`);
@@ -9144,9 +9154,18 @@
 
         exportUForensicBtn.disabled = true;
         exportUForensicBtn.textContent = "Exporting...";
+
+        const fileTargets = (loadedFiles || []).map(f => ({
+          path: f.path,
+          sheet: f.sheet || null,
+          cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null
+        }));
+
         const res = await invoke("export_forensic_workbook", {
           destPath: dest,
-          analystName: "Forensic Examiner"
+          analystName: "Forensic Examiner",
+          files: fileTargets.length > 0 ? fileTargets : null,
+          batchResults: (latestBatchResults && latestBatchResults.length > 0) ? latestBatchResults : null,
         });
 
         alert(`Forensic Reporting Workbook Exported Successfully!\n\nExcel: ${res.xlsxPath}\nTimeline CSV: ${res.csvTimelinePath}\nRecords Exported: ${res.totalExported}\n\nSheets included: MASTER TIMELINE, IOC, INVENTORY, SUSPICIOUS ACCOUNTS, List.`);

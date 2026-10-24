@@ -948,3 +948,98 @@ fn test_unified_grid_and_multisheet_custom_columns_preservation() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+#[test]
+fn test_export_multi_file_forensic_workbook_aggregates_all_users_and_searched_iocs() {
+    let temp_dir = std::env::temp_dir().join(format!("dfir_multi_wb_test_{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let db1_path = temp_dir.join("file1_cache.db");
+    let conn1 = db::open(&db1_path).unwrap();
+    conn1.execute_batch(
+        "CREATE TABLE rows (row_num INTEGER PRIMARY KEY, Date TEXT, Time TEXT, User TEXT, IP TEXT, Action TEXT);
+         INSERT INTO rows VALUES (1, '2026-10-24', '10:00:00', 'analyst.one@testcorp.local', '192.168.1.10', 'UserLoggedIn');
+         INSERT INTO rows VALUES (2, '2026-10-24', '10:05:00', 'analyst.two@testcorp.local', '192.168.1.20', 'FileDownloaded');"
+    ).unwrap();
+
+    let db2_path = temp_dir.join("file2_cache.db");
+    let conn2 = db::open(&db2_path).unwrap();
+    conn2.execute_batch(
+        "CREATE TABLE rows (row_num INTEGER PRIMARY KEY, Timestamp TEXT, Account TEXT, SourceIP TEXT, Message TEXT);
+         INSERT INTO rows VALUES (1, '2026-10-24T10:15:00Z', 'admin.three@testcorp.local', '10.0.0.5', 'AdminAccessGranted');"
+    ).unwrap();
+
+    let targets = vec![
+        log_parser_lib::commands::FileTarget {
+            path: "target_user_file1.csv".to_string(),
+            sheet: None,
+            cache_db_path: Some(db1_path.to_string_lossy().to_string()),
+        },
+        log_parser_lib::commands::FileTarget {
+            path: "target_user_file2.csv".to_string(),
+            sheet: None,
+            cache_db_path: Some(db2_path.to_string_lossy().to_string()),
+        },
+    ];
+
+    let batch_results = vec![
+        log_parser_lib::commands::BatchIndicatorResult {
+            indicator: "192.168.1.10".to_string(),
+            indicator_type: "ip".to_string(),
+            total_matches: 1,
+            file_hits: vec![log_parser_lib::commands::BatchFileHit {
+                file_name: "target_user_file1.csv".to_string(),
+                path: "target_user_file1.csv".to_string(),
+                match_count: 1,
+                sheet: String::new(), sample_row_nums: vec![1],
+            }],
+        },
+        log_parser_lib::commands::BatchIndicatorResult {
+            indicator: "mirconsoft.com".to_string(),
+            indicator_type: "domain".to_string(),
+            total_matches: 0,
+            file_hits: vec![],
+        },
+    ];
+
+    let export_xlsx = temp_dir.join("test_multi_forensic_workbook.xlsx");
+    let res = log_parser_lib::universal_export::export_multi_file_forensic_workbook(
+        &targets,
+        Some(&batch_results),
+        &export_xlsx,
+        "Examiner A",
+    ).unwrap();
+
+    assert_eq!(res.total_exported_records, 3);
+
+    // Read back workbook sheets using calamine
+    use calamine::{open_workbook, Reader, Xlsx};
+    let mut xl: Xlsx<_> = open_workbook(&export_xlsx).expect("open excel");
+    let sheet_names = xl.sheet_names().to_vec();
+    assert!(sheet_names.contains(&"MASTER TIMELINE".to_string()));
+    assert!(sheet_names.contains(&"IOC SEARCH RESULTS".to_string()));
+    assert!(sheet_names.contains(&"IOC".to_string()));
+    assert!(sheet_names.contains(&"INVENTORY".to_string()));
+    assert!(sheet_names.contains(&"SUSPICIOUS ACCOUNTS".to_string()));
+
+    // Verify SUSPICIOUS ACCOUNTS contains users from both files
+    let acc_range = xl.worksheet_range("SUSPICIOUS ACCOUNTS").unwrap();
+    let mut users_found = Vec::new();
+    for r in 1..acc_range.height() {
+        if let Some(val) = acc_range.get((r, 0)) {
+            users_found.push(val.to_string());
+        }
+    }
+    assert!(users_found.contains(&"analyst.one@testcorp.local".to_string()));
+    assert!(users_found.contains(&"analyst.two@testcorp.local".to_string()));
+    assert!(users_found.contains(&"admin.three@testcorp.local".to_string()));
+
+    // Verify IOC SEARCH RESULTS contains both hits and non-hits
+    let search_range = xl.worksheet_range("IOC SEARCH RESULTS").unwrap();
+    assert_eq!(search_range.height(), 3); // header + 2 indicators
+
+    // Verify INVENTORY contains both files
+    let inv_range = xl.worksheet_range("INVENTORY").unwrap();
+    assert_eq!(inv_range.height(), 3); // header + 2 files
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

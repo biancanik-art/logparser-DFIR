@@ -210,23 +210,31 @@ fn process_evidence_row(
 ) -> Result<(), XlsxError> {
     let time_str = raw_obj
         .and_then(|o| {
-            json_find_str(
+            if let Some(s) = json_find_str(
                 o,
                 &[
-                    "time",
-                    "timestamp",
+                    "utc_text",
+                    "norm_time",
                     "@timestamp",
+                    "timestamp",
                     "datetime",
                     "date_time",
-                    "eventtime",
-                    "timecreated",
                     "creationtime",
-                    "creationdate",
-                    "date",
-                    "norm_time",
+                    "timecreated",
+                    "eventtime",
                     "created_at",
                 ],
-            )
+            ) {
+                return Some(s);
+            }
+            let date_candidate = json_find_str(o, &["date", "event_date", "logdate", "creationdate"]);
+            let time_candidate = json_find_str(o, &["time", "event_time", "logtime"]);
+            if let (Some(d), Some(t)) = (date_candidate.as_ref(), time_candidate.as_ref()) {
+                if !d.contains(':') && t.contains(':') {
+                    return Some(format!("{d} {t}"));
+                }
+            }
+            date_candidate.or(time_candidate)
         })
         .unwrap_or_else(|| "Unknown".to_string());
 
@@ -1508,6 +1516,535 @@ pub fn export_forensic_workbook(
             fail_file.write_all(b"\n")?;
         }
     }
+
+    Ok(UniversalExportResult {
+        xlsx_path: dest_xlsx.to_string_lossy().to_string(),
+        csv_timeline_path: csv_path.to_string_lossy().to_string(),
+        total_exported_records: total_exported,
+    })
+}
+
+pub fn export_multi_file_forensic_workbook(
+    targets: &[crate::commands::FileTarget],
+    batch_results: Option<&[crate::commands::BatchIndicatorResult]>,
+    dest_xlsx: &Path,
+    analyst_name: &str,
+) -> Result<UniversalExportResult> {
+    let mut workbook = Workbook::new();
+    let header_fmt = Format::new().set_bold();
+    let input_date = Utc::now().format("%Y-%m-%d").to_string();
+
+    // ==========================================
+    // 1. MASTER TIMELINE Sheet
+    // ==========================================
+    let master_sheet = workbook.add_worksheet();
+    master_sheet.set_name("MASTER TIMELINE")?;
+
+    let master_headers = [
+        "Input Date",
+        "Analyst",
+        "Date/Time (UTC)",
+        "Host/Device",
+        "Event Type & MITRE ATT&CK ID",
+        "File/Artifact Information",
+        "Is This Malicious?",
+        "User Account",
+        "Source Host",
+        "Source IP Address",
+        "Destination Host",
+        "Destination IP Address",
+        "Evidence Source",
+        "Event ID",
+        "Notes",
+    ];
+
+    for (col_idx, header) in master_headers.iter().enumerate() {
+        master_sheet.write_string_with_format(0, col_idx as u16, *header, &header_fmt)?;
+    }
+
+    let master_col_widths = [
+        22.0, 16.0, 28.0, 26.0, 55.0, 65.0, 20.0, 32.0, 24.0, 24.0, 24.0, 24.0, 35.0, 20.0, 65.0,
+    ];
+    for (col_idx, width) in master_col_widths.iter().enumerate() {
+        master_sheet.set_column_width(col_idx as u16, *width)?;
+    }
+
+    let mut row_idx: u32 = 1;
+    let mut csv_lines: Vec<String> = vec![master_headers.join(",")];
+    let mut total_exported = 0;
+    let mut all_users: HashSet<String> = HashSet::new();
+    let mut all_files_info: Vec<(String, String, i64)> = Vec::new();
+
+    for target in targets {
+        let file_name = Path::new(&target.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| target.path.clone());
+        let sheet_name = target.sheet.clone().unwrap_or_default();
+
+        let db_path = if let Some(ref p) = target.cache_db_path {
+            let candidate = std::path::PathBuf::from(p);
+            if candidate.exists() {
+                candidate
+            } else {
+                db::cache_db_path(Path::new(&target.path), &sheet_name)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(p))
+            }
+        } else {
+            match db::cache_db_path(Path::new(&target.path), &sheet_name) {
+                Ok(p) => p,
+                Err(_) => continue,
+            }
+        };
+
+        if !db_path.exists() {
+            continue;
+        }
+
+        let conn = match db::open(&db_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        let file_row_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM rows", [], |r| r.get(0))
+            .unwrap_or(0);
+        all_files_info.push((file_name.clone(), target.path.clone(), file_row_count));
+
+        // Discover all user accounts from this file
+        let mut pragma_stmt = conn.prepare("PRAGMA table_info('rows')")?;
+        let col_names: Vec<String> = pragma_stmt
+            .query_map([], |r| r.get::<_, String>(1))?
+            .flatten()
+            .filter(|name| name != "row_num")
+            .collect();
+
+        for col_name in &col_names {
+            let col_lower = col_name.to_lowercase();
+            if col_lower == "user"
+                || col_lower == "username"
+                || col_lower == "user_id"
+                || col_lower == "userid"
+                || col_lower == "userprincipalname"
+                || col_lower == "upn"
+                || col_lower == "account"
+                || col_lower == "actor"
+                || col_lower == "accountname"
+                || col_lower == "identity"
+                || col_lower == "targetusername"
+                || col_lower == "subjectusername"
+                || col_lower == "mail"
+                || col_lower == "email"
+                || col_lower.contains("user")
+                || col_lower.contains("account")
+            {
+                let q_col = db::quote_ident(col_name);
+                let sql = format!("SELECT DISTINCT {} FROM rows WHERE {} IS NOT NULL AND {} != '' LIMIT 500", q_col, q_col, q_col);
+                if let Ok(mut u_stmt) = conn.prepare(&sql) {
+                    if let Ok(u_rows) = u_stmt.query_map([], |r| r.get::<_, String>(0)) {
+                        for u in u_rows.flatten() {
+                            let trimmed = u.trim().to_string();
+                            if !trimmed.is_empty() && (trimmed.contains('@') || trimmed.len() >= 3) {
+                                all_users.insert(trimmed);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Extract potential user identity from file name
+        let stem = Path::new(&file_name).file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        let clean_stem = stem.replace("_parsed", "").replace("_timeline", "").replace("_evidence", "").replace("_audit", "");
+        if clean_stem.contains('@') {
+            all_users.insert(clean_stem);
+        }
+
+        let has_row_time: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='_row_time')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+
+        let has_raw_evidence: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM pragma_table_info('rows') WHERE name='raw_evidence')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap_or(false);
+
+        if has_raw_evidence {
+            let select_sql = if has_row_time {
+                "SELECT r.row_num, r.raw_evidence, rt.utc_text FROM rows r LEFT JOIN _row_time rt ON rt.row_num = r.row_num ORDER BY r.row_num ASC LIMIT 50000"
+            } else {
+                "SELECT r.row_num, r.raw_evidence, NULL FROM rows r ORDER BY r.row_num ASC LIMIT 50000"
+            };
+            if let Ok(mut stmt) = conn.prepare(select_sql) {
+                let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))?;
+                for res in rows {
+                    let (r_num, raw_ev, rt_utc) = res?;
+                    total_exported += 1;
+                    let mut raw_obj: Option<Value> = raw_ev.as_ref().and_then(|s| serde_json::from_str(s).ok());
+                    if let Some(utc) = rt_utc {
+                        if !utc.trim().is_empty() {
+                            if let Some(Value::Object(ref mut map)) = raw_obj {
+                                map.entry("utc_text".to_string()).or_insert(Value::String(utc));
+                            }
+                        }
+                    }
+                    if let Some(ref o) = raw_obj {
+                        if let Some(u) = json_find_str(o, &["user", "userid", "user_id", "userprincipalname", "upn", "account"]) {
+                            if u.contains('@') || u.len() >= 3 {
+                                all_users.insert(u);
+                            }
+                        }
+                    }
+                    process_evidence_row(
+                        master_sheet,
+                        &mut csv_lines,
+                        &mut row_idx,
+                        input_date.as_str(),
+                        analyst_name,
+                        r_num,
+                        raw_obj.as_ref(),
+                        &file_name,
+                    )?;
+                }
+            }
+        } else if !col_names.is_empty() {
+            let quoted_cols: Vec<String> = col_names.iter().map(|c| format!("r.{}", db::quote_ident(c))).collect();
+            let select_sql = if has_row_time {
+                format!(
+                    "SELECT r.row_num, rt.utc_text, {} FROM rows r LEFT JOIN _row_time rt ON rt.row_num = r.row_num ORDER BY r.row_num ASC LIMIT 50000",
+                    quoted_cols.join(", ")
+                )
+            } else {
+                format!(
+                    "SELECT r.row_num, NULL, {} FROM rows r ORDER BY r.row_num ASC LIMIT 50000",
+                    quoted_cols.join(", ")
+                )
+            };
+            if let Ok(mut stmt) = conn.prepare(&select_sql) {
+                if let Ok(mut rows) = stmt.query([]) {
+                    while let Ok(Some(row)) = rows.next() {
+                        let r_num: i64 = row.get(0).unwrap_or(0);
+                        let rt_utc: Option<String> = row.get(1).unwrap_or(None);
+                        total_exported += 1;
+
+                        let mut map = serde_json::Map::new();
+                        if let Some(utc) = rt_utc {
+                            if !utc.trim().is_empty() {
+                                map.insert("utc_text".to_string(), Value::String(utc));
+                            }
+                        }
+
+                        for (idx, col_name) in col_names.iter().enumerate() {
+                            if let Ok(Some(val)) = row.get::<_, Option<String>>(idx + 2) {
+                                let trimmed = val.trim();
+                                if !trimmed.is_empty() {
+                                    let col_lower = col_name.to_lowercase();
+                                    if col_lower.contains("user") || col_lower.contains("account") || col_lower.contains("upn") {
+                                        if trimmed.contains('@') || trimmed.len() >= 3 {
+                                            all_users.insert(trimmed.to_string());
+                                        }
+                                    }
+                                    if (col_name.eq_ignore_ascii_case("auditdata")
+                                        || col_name.eq_ignore_ascii_case("payload")
+                                        || col_name.eq_ignore_ascii_case("raw")
+                                        || col_name.eq_ignore_ascii_case("parameters"))
+                                        && trimmed.starts_with('{')
+                                    {
+                                        if let Ok(Value::Object(nested_map)) = serde_json::from_str::<Value>(trimmed) {
+                                            for (k, v) in nested_map {
+                                                if k.to_lowercase().contains("user") || k.to_lowercase().contains("account") || k.to_lowercase().contains("upn") {
+                                                    if let Some(s) = v.as_str() {
+                                                        let s_trim = s.trim();
+                                                        if !s_trim.is_empty() && (s_trim.contains('@') || s_trim.len() >= 3) {
+                                                            all_users.insert(s_trim.to_string());
+                                                        }
+                                                    }
+                                                }
+                                                map.entry(k).or_insert(v);
+                                            }
+                                        }
+                                    }
+                                    map.insert(col_name.clone(), Value::String(trimmed.to_string()));
+                                }
+                            }
+                        }
+
+                        let raw_obj = Some(Value::Object(map));
+                        let _ = process_evidence_row(
+                            master_sheet,
+                            &mut csv_lines,
+                            &mut row_idx,
+                            input_date.as_str(),
+                            analyst_name,
+                            r_num,
+                            raw_obj.as_ref(),
+                            &file_name,
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    if row_idx > 1 {
+        master_sheet.autofilter(0, 0, row_idx - 1, 14)?;
+    }
+
+    // ==========================================
+    // 2. IOC SEARCH RESULTS Sheet (if batch search results provided)
+    // ==========================================
+    if let Some(b_results) = batch_results {
+        if !b_results.is_empty() {
+            let res_sheet = workbook.add_worksheet();
+            res_sheet.set_name("IOC SEARCH RESULTS")?;
+            let res_headers = [
+                "Searched Indicator",
+                "Indicator Type",
+                "Total Event Hits",
+                "Status",
+                "Participating Files Breakdown",
+            ];
+            for (col, h) in res_headers.iter().enumerate() {
+                res_sheet.write_string_with_format(0, col as u16, *h, &header_fmt)?;
+            }
+            res_sheet.set_column_width(0, 35.0)?;
+            res_sheet.set_column_width(1, 18.0)?;
+            res_sheet.set_column_width(2, 18.0)?;
+            res_sheet.set_column_width(3, 22.0)?;
+            res_sheet.set_column_width(4, 65.0)?;
+
+            for (idx, item) in b_results.iter().enumerate() {
+                let r = (idx + 1) as u32;
+                res_sheet.write_string(r, 0, &item.indicator)?;
+                res_sheet.write_string(r, 1, &item.indicator_type)?;
+                res_sheet.write_number(r, 2, item.total_matches as f64)?;
+                let status_str = if item.total_matches > 0 {
+                    format!("Hit across {} file(s)", item.file_hits.len())
+                } else {
+                    "No Matches Found".to_string()
+                };
+                res_sheet.write_string(r, 3, &status_str)?;
+                let breakdown = item
+                    .file_hits
+                    .iter()
+                    .map(|fh| format!("{} ({} rows)", fh.file_name, fh.match_count))
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                res_sheet.write_string(r, 4, &breakdown)?;
+            }
+            res_sheet.autofilter(0, 0, b_results.len() as u32, 4)?;
+        }
+    }
+
+    // ==========================================
+    // 3. IOC Sheet (All extracted / searched IOCs)
+    // ==========================================
+    let ioc_sheet = workbook.add_worksheet();
+    ioc_sheet.set_name("IOC")?;
+    let ioc_headers = [
+        "Type",
+        "Indicator",
+        "Description",
+        "Source File",
+        "MD5 Hash",
+        "SHA1 Hash",
+        "SHA256 Hash",
+        "Status",
+    ];
+    for (col_idx, header) in ioc_headers.iter().enumerate() {
+        ioc_sheet.write_string_with_format(0, col_idx as u16, *header, &header_fmt)?;
+    }
+    let ioc_col_widths = [22.0, 45.0, 40.0, 30.0, 35.0, 42.0, 66.0, 20.0];
+    for (col_idx, width) in ioc_col_widths.iter().enumerate() {
+        ioc_sheet.set_column_width(col_idx as u16, *width)?;
+    }
+
+    let mut ioc_row_idx: u32 = 1;
+    let mut recorded_iocs: HashSet<(String, String)> = HashSet::new();
+
+    if let Some(b_results) = batch_results {
+        for item in b_results {
+            if item.total_matches > 0 {
+                let key = (item.indicator_type.clone(), item.indicator.clone());
+                if !recorded_iocs.contains(&key) {
+                    recorded_iocs.insert(key);
+                    ioc_sheet.write_string(ioc_row_idx, 0, &item.indicator_type)?;
+                    ioc_sheet.write_string(ioc_row_idx, 1, &item.indicator)?;
+                    ioc_sheet.write_string(ioc_row_idx, 2, "Searched IOC matched in log evidence")?;
+                    let files_str = item.file_hits.iter().map(|f| f.file_name.as_str()).collect::<Vec<_>>().join(", ");
+                    ioc_sheet.write_string(ioc_row_idx, 3, &files_str)?;
+                    ioc_sheet.write_string(ioc_row_idx, 7, "Confirmed Match")?;
+                    ioc_row_idx += 1;
+                }
+            }
+        }
+    }
+
+    // Also collect any matches stored in _ioc_matches across loaded DBs
+    for target in targets {
+        let file_name = Path::new(&target.path)
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| target.path.clone());
+        let sheet_name = target.sheet.clone().unwrap_or_default();
+        let db_path = if let Some(ref p) = target.cache_db_path {
+            let candidate = std::path::PathBuf::from(p);
+            if candidate.exists() {
+                candidate
+            } else {
+                db::cache_db_path(Path::new(&target.path), &sheet_name)
+                    .unwrap_or_else(|_| std::path::PathBuf::from(p))
+            }
+        } else {
+            match db::cache_db_path(Path::new(&target.path), &sheet_name) {
+                Ok(p) => p,
+                Err(_) => continue,
+            }
+        };
+
+        if let Ok(c) = db::open(&db_path) {
+            let has_ioc_matches: bool = c
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='_ioc_matches')",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap_or(false);
+            if has_ioc_matches {
+                if let Ok(mut stmt) = c.prepare("SELECT DISTINCT ioc_type, ioc_value, matched_field, match_kind FROM _ioc_matches LIMIT 2000") {
+                    if let Ok(rows) = stmt.query_map([], |r| {
+                        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
+                    }) {
+                        for res in rows.flatten() {
+                            let (itype, ival, mfield, mkind) = res;
+                            let key = (itype.clone(), ival.clone());
+                            if !recorded_iocs.contains(&key) {
+                                recorded_iocs.insert(key);
+                                ioc_sheet.write_string(ioc_row_idx, 0, &itype)?;
+                                ioc_sheet.write_string(ioc_row_idx, 1, &ival)?;
+                                ioc_sheet.write_string(ioc_row_idx, 2, &format!("Threat match on {mfield} ({mkind})"))?;
+                                ioc_sheet.write_string(ioc_row_idx, 3, &file_name)?;
+                                ioc_sheet.write_string(ioc_row_idx, 7, "Confirmed Match")?;
+                                ioc_row_idx += 1;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if ioc_row_idx > 1 {
+        ioc_sheet.autofilter(0, 0, ioc_row_idx - 1, 7)?;
+    }
+
+    // ==========================================
+    // 4. INVENTORY Sheet (All participating files)
+    // ==========================================
+    let inv_sheet = workbook.add_worksheet();
+    inv_sheet.set_name("INVENTORY")?;
+    let inv_headers = [
+        "Evidence Type",
+        "Device Name",
+        "IP Address",
+        "File Name",
+        "Analyzed",
+        "Assigned",
+        "Compromised",
+        "Notes",
+    ];
+    for (col_idx, header) in inv_headers.iter().enumerate() {
+        inv_sheet.write_string_with_format(0, col_idx as u16, *header, &header_fmt)?;
+    }
+    let inv_col_widths = [28.0, 26.0, 22.0, 42.0, 14.0, 18.0, 18.0, 65.0];
+    for (col_idx, width) in inv_col_widths.iter().enumerate() {
+        inv_sheet.set_column_width(col_idx as u16, *width)?;
+    }
+
+    let mut inv_row_idx: u32 = 1;
+    for (fname, path_str, count) in &all_files_info {
+        inv_sheet.write_string(inv_row_idx, 0, "Ingested Log File")?;
+        inv_sheet.write_string(inv_row_idx, 1, "")?;
+        inv_sheet.write_string(inv_row_idx, 2, "")?;
+        inv_sheet.write_string(inv_row_idx, 3, fname)?;
+        inv_sheet.write_string(inv_row_idx, 4, "Yes")?;
+        inv_sheet.write_string(inv_row_idx, 5, analyst_name)?;
+        inv_sheet.write_string(inv_row_idx, 6, "Undetermined")?;
+        inv_sheet.write_string(inv_row_idx, 7, &format!("Imported {} records from {}", count, path_str))?;
+        inv_row_idx += 1;
+    }
+    if inv_row_idx > 1 {
+        inv_sheet.autofilter(0, 0, inv_row_idx - 1, 7)?;
+    }
+
+    // ==========================================
+    // 5. SUSPICIOUS ACCOUNTS Sheet (All detected users)
+    // ==========================================
+    let acc_sheet = workbook.add_worksheet();
+    acc_sheet.set_name("SUSPICIOUS ACCOUNTS")?;
+    let acc_headers = [
+        "Account / User",
+        "Evidence Type",
+        "Analyzed",
+        "Status",
+        "Assigned",
+        "Notes",
+    ];
+    for (col_idx, header) in acc_headers.iter().enumerate() {
+        acc_sheet.write_string_with_format(0, col_idx as u16, *header, &header_fmt)?;
+    }
+    acc_sheet.set_column_width(0, 35.0)?;
+    acc_sheet.set_column_width(1, 24.0)?;
+    acc_sheet.set_column_width(2, 14.0)?;
+    acc_sheet.set_column_width(3, 18.0)?;
+    acc_sheet.set_column_width(4, 18.0)?;
+    acc_sheet.set_column_width(5, 50.0)?;
+
+    let mut acc_row_idx: u32 = 1;
+    for user in &all_users {
+        if !user.is_empty() && (user.contains('@') || user.len() >= 3) {
+            acc_sheet.write_string(acc_row_idx, 0, user)?;
+            acc_sheet.write_string(acc_row_idx, 1, "User Identity")?;
+            acc_sheet.write_string(acc_row_idx, 2, "Yes")?;
+            acc_sheet.write_string(acc_row_idx, 3, "Under Review")?;
+            acc_sheet.write_string(acc_row_idx, 4, analyst_name)?;
+            acc_sheet.write_string(acc_row_idx, 5, "Account identified across evidence files")?;
+            acc_row_idx += 1;
+        }
+    }
+    if acc_row_idx > 1 {
+        acc_sheet.autofilter(0, 0, acc_row_idx - 1, 5)?;
+    }
+
+    // ==========================================
+    // 6. List Sheet
+    // ==========================================
+    let list_sheet = workbook.add_worksheet();
+    list_sheet.set_name("List")?;
+    list_sheet.write_string(0, 0, "Is This Malicious?")?;
+    list_sheet.write_string(1, 0, "Yes")?;
+    list_sheet.write_string(2, 0, "No")?;
+    list_sheet.write_string(3, 0, "Undetermined")?;
+
+    workbook
+        .save(dest_xlsx)
+        .with_context(|| format!("saving workbook to {}", dest_xlsx.display()))?;
+
+    let parent_dir = dest_xlsx.parent().unwrap_or_else(|| Path::new("."));
+    let stem = dest_xlsx
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("MASTER_TIMELINE");
+    let csv_path = parent_dir.join(format!("{stem}.csv"));
+    let mut csv_file = File::create(&csv_path)?;
+    csv_file.write_all(csv_lines.join("\n").as_bytes())?;
 
     Ok(UniversalExportResult {
         xlsx_path: dest_xlsx.to_string_lossy().to_string(),

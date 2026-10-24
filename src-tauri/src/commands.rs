@@ -3785,26 +3785,49 @@ pub async fn get_log_analytics_summary(
 pub async fn export_forensic_workbook(
     dest_path: String,
     analyst_name: String,
+    files: Option<Vec<FileTarget>>,
+    batch_results: Option<Vec<BatchIndicatorResult>>,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    let (db_path, _, _) = state_snapshot(&state)?;
-    tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
-        let conn = db::open(&db_path).map_err(|e| e.to_string())?;
-        let res = crate::universal_export::export_forensic_workbook(
-            &conn,
-            Path::new(&dest_path),
-            &analyst_name,
-        )
-        .map_err(|e| e.to_string())?;
+    let targets = files.unwrap_or_default();
+    if !targets.is_empty() {
+        tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+            let res = crate::universal_export::export_multi_file_forensic_workbook(
+                &targets,
+                batch_results.as_deref(),
+                Path::new(&dest_path),
+                &analyst_name,
+            )
+            .map_err(|e| e.to_string())?;
 
-        Ok(serde_json::json!({
-            "xlsxPath": res.xlsx_path,
-            "csvTimelinePath": res.csv_timeline_path,
-            "totalExported": res.total_exported_records
-        }))
-    })
-    .await
-    .map_err(|e| format!("export_forensic_workbook join error: {e}"))?
+            Ok(serde_json::json!({
+                "xlsxPath": res.xlsx_path,
+                "csvTimelinePath": res.csv_timeline_path,
+                "totalExported": res.total_exported_records
+            }))
+        })
+        .await
+        .map_err(|e| format!("export_forensic_workbook join error: {e}"))?
+    } else {
+        let (db_path, _, _) = state_snapshot(&state)?;
+        tauri::async_runtime::spawn_blocking(move || -> Result<serde_json::Value, String> {
+            let conn = db::open(&db_path).map_err(|e| e.to_string())?;
+            let res = crate::universal_export::export_forensic_workbook(
+                &conn,
+                Path::new(&dest_path),
+                &analyst_name,
+            )
+            .map_err(|e| e.to_string())?;
+
+            Ok(serde_json::json!({
+                "xlsxPath": res.xlsx_path,
+                "csvTimelinePath": res.csv_timeline_path,
+                "totalExported": res.total_exported_records
+            }))
+        })
+        .await
+        .map_err(|e| format!("export_forensic_workbook join error: {e}"))?
+    }
 }
 
 #[cfg(test)]
