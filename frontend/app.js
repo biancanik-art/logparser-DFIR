@@ -108,6 +108,14 @@
   const badgeEnrichment = document.getElementById("badge-enrichment");
   const badgeRules = document.getElementById("badge-rules");
   const gridCrossSearchBtn = document.getElementById("grid-cross-search-btn");
+  const gridTimeFilterBtn = document.getElementById("grid-time-filter-btn");
+  const timeFilterPopover = document.getElementById("time-filter-popover");
+  const timeFilterCloseBtn = document.getElementById("time-filter-close-btn");
+  const timeFilterFrom = document.getElementById("time-filter-from");
+  const timeFilterTo = document.getElementById("time-filter-to");
+  const timeFilterSpanText = document.getElementById("time-filter-span-text");
+  const timeFilterApplyBtn = document.getElementById("time-filter-apply-btn");
+  const timeFilterClearBtn = document.getElementById("time-filter-clear-btn");
   const gridActiveFilterBar = document.getElementById("grid-active-filter-bar");
   const gridActiveFilterLabel = document.getElementById("grid-active-filter-label");
   const gridClearFilterBtn = document.getElementById("grid-clear-filter-btn");
@@ -380,7 +388,7 @@
   function setControlsEnabled(enabled) {
     controlsEnabled = enabled;
     removeFileBtn.disabled = !enabled;
-    searchBox.disabled = !enabled;
+    searchBox.disabled = isUnifiedCorrelatedMode ? false : !enabled;
     guidedSearchBox.disabled = !enabled;
     guidedSearchSubmit.disabled = !enabled;
     reportExportBtn.disabled = !enabled || sheetLoadInFlight || activeReportExport !== null;
@@ -415,7 +423,7 @@
     sheetLoadInFlight = inFlight;
     openFileBtn.disabled = inFlight;
     sheetLoadBtn.disabled = inFlight;
-    searchBox.disabled = inFlight || !controlsEnabled;
+    searchBox.disabled = isUnifiedCorrelatedMode ? false : (inFlight || !controlsEnabled);
     reportExportBtn.disabled = inFlight || !controlsEnabled || activeReportExport !== null;
     exportCsvBtn.disabled = inFlight || !controlsEnabled;
     exportXlsxBtn.disabled = inFlight || !controlsEnabled;
@@ -466,6 +474,15 @@
   }
 
   function updateGuidedInteractionControls() {
+    if (isUnifiedCorrelatedMode) {
+      if (searchBox) searchBox.disabled = false;
+      if (gridTimeFilterBtn) gridTimeFilterBtn.disabled = false;
+      if (gridExportCsvBtn) gridExportCsvBtn.disabled = false;
+      if (gridExportXlsxBtn) gridExportXlsxBtn.disabled = false;
+      if (sidebarToggleBtn) sidebarToggleBtn.classList.add("hidden");
+      if (sidebar) sidebar.classList.add("collapsed");
+      return;
+    }
     const parsing = guidedActiveParse !== null;
     const actionInFlight = guidedActiveAction !== null;
     const queryInFlight = guidedActiveQuery !== null;
@@ -1283,6 +1300,223 @@
     return `<div class="unified-details-cell">${renderedParts.join("")}</div>`;
   }
 
+  let activeTimeFilter = null;
+
+  function parseUserDateTimeToEpoch(inputStr, isEndOfDay = false) {
+    if (!inputStr || typeof inputStr !== "string") return null;
+    const str = inputStr.trim();
+    if (!str) return null;
+
+    if (/^\d{10,13}$/.test(str)) {
+      const num = parseInt(str, 10);
+      return str.length === 10 ? num * 1000 : num;
+    }
+
+    if (/^\d{4}-\d{2}-\d{2}$/.test(str)) {
+      const iso = isEndOfDay ? `${str}T23:59:59.999Z` : `${str}T00:00:00.000Z`;
+      const ms = Date.parse(iso);
+      return isNaN(ms) ? null : ms;
+    }
+
+    let norm = str.replace(" ", "T");
+    if (!norm.endsWith("Z") && !/[+-]\d{2}:\d{2}$/.test(norm)) {
+      norm += "Z";
+    }
+    const ms = Date.parse(norm);
+    if (!isNaN(ms)) return ms;
+
+    const fallback = Date.parse(str);
+    return isNaN(fallback) ? null : fallback;
+  }
+
+  function formatEpochToUtcText(ms) {
+    if (!ms || isNaN(ms)) return "";
+    const d = new Date(ms);
+    return d.toISOString().replace("T", " ").replace(/\.\d{3}Z$/, "");
+  }
+
+  function updateTimeFilterButtonVisuals() {
+    if (!gridTimeFilterBtn) return;
+    if (activeTimeFilter && (activeTimeFilter.fromText || activeTimeFilter.toText)) {
+      gridTimeFilterBtn.classList.add("active-filter");
+      const fromShort = activeTimeFilter.fromText ? (activeTimeFilter.fromText.includes(" ") ? activeTimeFilter.fromText.split(" ")[1] : activeTimeFilter.fromText) : "Start";
+      const toShort = activeTimeFilter.toText ? (activeTimeFilter.toText.includes(" ") ? activeTimeFilter.toText.split(" ")[1] : activeTimeFilter.toText) : "End";
+      gridTimeFilterBtn.innerHTML = `🕒 ${escapeHtml(fromShort)} &rarr; ${escapeHtml(toShort)} <span class="time-filter-clear-x" title="Clear time filter">&times;</span>`;
+      gridTimeFilterBtn.title = `Active time filter: ${activeTimeFilter.fromText || "Start"} to ${activeTimeFilter.toText || "End"}\nClick ✕ to clear.`;
+    } else {
+      gridTimeFilterBtn.classList.remove("active-filter");
+      gridTimeFilterBtn.innerHTML = "🕒 Date/Time Filter";
+      gridTimeFilterBtn.title = "Filter events by Date and Time range (UTC)";
+    }
+  }
+
+  function openTimeFilterPopover() {
+    if (!timeFilterPopover) return;
+
+    let minEpoch = null;
+    let maxEpoch = null;
+
+    if (isUnifiedCorrelatedMode && Array.isArray(unifiedCorrelatedRows)) {
+      unifiedCorrelatedRows.forEach((ev) => {
+        let ep = ev.epochMs ?? ev.epoch_ms;
+        if (!ep && ev.utcText) ep = parseUserDateTimeToEpoch(ev.utcText);
+        if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
+          if (minEpoch === null || ep < minEpoch) minEpoch = ep;
+          if (maxEpoch === null || ep > maxEpoch) maxEpoch = ep;
+        }
+      });
+    }
+
+    if (minEpoch && maxEpoch && timeFilterSpanText) {
+      const minStr = formatEpochToUtcText(minEpoch);
+      const maxStr = formatEpochToUtcText(maxEpoch);
+      timeFilterSpanText.textContent = `${minStr} → ${maxStr} UTC`;
+      timeFilterSpanText.dataset.minEpoch = String(minEpoch);
+      timeFilterSpanText.dataset.maxEpoch = String(maxEpoch);
+    } else if (timeFilterSpanText) {
+      timeFilterSpanText.textContent = "ISO 8601 UTC timestamps (e.g. 2026-10-02 13:40:00)";
+    }
+
+    if (activeTimeFilter) {
+      if (timeFilterFrom) timeFilterFrom.value = activeTimeFilter.fromText || "";
+      if (timeFilterTo) timeFilterTo.value = activeTimeFilter.toText || "";
+    }
+
+    timeFilterPopover.classList.remove("hidden");
+    if (timeFilterFrom) timeFilterFrom.focus();
+  }
+
+  function closeTimeFilterPopover() {
+    if (timeFilterPopover) timeFilterPopover.classList.add("hidden");
+  }
+
+  function toggleTimeFilterPopover() {
+    if (!timeFilterPopover) return;
+    if (timeFilterPopover.classList.contains("hidden")) {
+      openTimeFilterPopover();
+    } else {
+      closeTimeFilterPopover();
+    }
+  }
+
+  function applyTimeFilter(fromVal, toVal) {
+    const fromStr = (fromVal || "").trim();
+    const toStr = (toVal || "").trim();
+
+    if (!fromStr && !toStr) {
+      clearTimeFilter();
+      return;
+    }
+
+    const fromEpoch = parseUserDateTimeToEpoch(fromStr, false);
+    const toEpoch = parseUserDateTimeToEpoch(toStr, true);
+
+    if (fromEpoch && toEpoch && fromEpoch > toEpoch) {
+      alert("Invalid time filter: 'From' time cannot be after 'To' time.");
+      return;
+    }
+
+    activeTimeFilter = {
+      fromText: fromStr,
+      toText: toStr,
+      fromEpoch,
+      toEpoch,
+    };
+
+    updateTimeFilterButtonVisuals();
+    closeTimeFilterPopover();
+
+    if (isUnifiedCorrelatedMode) {
+      applyUnifiedFilters();
+    } else {
+      applyControlsAndReload();
+    }
+  }
+
+  function clearTimeFilter(opts = {}) {
+    const reload = opts.reload !== false;
+    activeTimeFilter = null;
+    if (timeFilterFrom) timeFilterFrom.value = "";
+    if (timeFilterTo) timeFilterTo.value = "";
+    updateTimeFilterButtonVisuals();
+    closeTimeFilterPopover();
+
+    if (reload) {
+      if (isUnifiedCorrelatedMode) {
+        applyUnifiedFilters();
+      } else {
+        applyControlsAndReload();
+      }
+    }
+  }
+
+  function applyUnifiedFilters() {
+    if (!isUnifiedCorrelatedMode || !table) return;
+
+    const term = (searchBox ? searchBox.value : "").trim().toLowerCase();
+    const hasTextFilter = Boolean(term);
+    const hasTimeFilter = Boolean(activeTimeFilter && (activeTimeFilter.fromEpoch || activeTimeFilter.toEpoch));
+
+    if (!hasTextFilter && !hasTimeFilter) {
+      table.clearFilter();
+      if (rowCountLabel && unifiedCorrelatedRows) {
+        const uniqueFiles = new Set(unifiedCorrelatedRows.map((e) => e.fileName || "File"));
+        rowCountLabel.textContent = `${unifiedCorrelatedRows.length.toLocaleString()} correlated events (Unified View across ${uniqueFiles.size} files)`;
+      }
+      return;
+    }
+
+    table.setFilter((data) => {
+      // 1. Time Filter
+      if (hasTimeFilter) {
+        let epoch = data.epochMs ?? data.epoch_ms;
+        if (!epoch && data.utcText && data.utcText !== "—") {
+          epoch = parseUserDateTimeToEpoch(data.utcText);
+        }
+        if (epoch) {
+          if (activeTimeFilter.fromEpoch !== null && epoch < activeTimeFilter.fromEpoch) {
+            return false;
+          }
+          if (activeTimeFilter.toEpoch !== null && epoch > activeTimeFilter.toEpoch) {
+            return false;
+          }
+        } else {
+          return false;
+        }
+      }
+
+      // 2. Text Search
+      if (hasTextFilter) {
+        const matches = Object.values(data).some((val) => {
+          if (val === null || val === undefined) return false;
+          if (typeof val === "string") return val.toLowerCase().includes(term);
+          if (typeof val === "number") return String(val).includes(term);
+          if (Array.isArray(val)) return val.some((item) => String(item).toLowerCase().includes(term));
+          if (typeof val === "object") return JSON.stringify(val).toLowerCase().includes(term);
+          return false;
+        });
+        if (!matches) return false;
+      }
+
+      return true;
+    });
+
+    if (rowCountLabel && typeof table.getData === "function") {
+      try {
+        const filteredCount = table.getData("active").length;
+        const total = (unifiedCorrelatedRows || []).length;
+        const filterParts = [];
+        if (hasTimeFilter) {
+          filterParts.push(`Time: ${activeTimeFilter.fromText || "Start"} → ${activeTimeFilter.toText || "End"}`);
+        }
+        if (hasTextFilter) {
+          filterParts.push(`"${term}"`);
+        }
+        rowCountLabel.textContent = `${filteredCount.toLocaleString()} events matching [${filterParts.join(" & ")}] (filtered from ${total.toLocaleString()})`;
+      } catch (_) {}
+    }
+  }
+
   async function renderUnifiedCorrelatedGrid(events, label, targetScrollIndex = null) {
     if (!events || events.length === 0) {
       alert("No correlated events found to display.");
@@ -1302,6 +1536,14 @@
     };
 
     switchTab("tab-grid");
+
+    if (searchBox) {
+      searchBox.disabled = false;
+      searchBox.placeholder = "Quick search unified timeline (all columns)...";
+    }
+    if (gridTimeFilterBtn) {
+      gridTimeFilterBtn.disabled = false;
+    }
 
     // In Unified Grid mode, the single-file filter sidebar is not applicable,
     // so ensure the sidebar and the toggle button stay hidden for maximum table space.
@@ -1449,6 +1691,9 @@
           if (e && e.altKey) {
             hideColumn(col.getField());
           }
+        },
+        headerDblClick(e, col) {
+          openTimeFilterPopover();
         },
         sorter(a, b, aRow, bRow) {
           const ea = aRow.getData().epochMs || 0;
@@ -1684,6 +1929,10 @@
     if (sidebarToggleBtn) {
       sidebarToggleBtn.classList.remove("hidden");
     }
+    if (searchBox) {
+      searchBox.placeholder = "Quick search all columns...";
+      searchBox.disabled = !controlsEnabled;
+    }
     try {
       const stored = localStorage.getItem("logparser_sidebar_collapsed");
       const shouldCollapse = stored !== "false";
@@ -1715,6 +1964,10 @@
 
     if (sidebarToggleBtn) {
       sidebarToggleBtn.classList.remove("hidden");
+    }
+    if (searchBox) {
+      searchBox.placeholder = "Quick search all columns...";
+      searchBox.disabled = !controlsEnabled;
     }
     try {
       const stored = localStorage.getItem("logparser_sidebar_collapsed");
@@ -3186,6 +3439,23 @@
         out.push({ column, op, value });
       }
     });
+
+    if (activeTimeFilter && Array.isArray(columns) && columns.length > 0) {
+      const dtCol = findFirstDateTimeColumn(columns, columnRoleSuggestions);
+      if (dtCol && dtCol.sqlName) {
+        if (activeTimeFilter.fromEpoch) {
+          out.push({ column: dtCol.sqlName, op: "greaterThan", value: formatEpochToUtcText(activeTimeFilter.fromEpoch - 1000) });
+        } else if (activeTimeFilter.fromText) {
+          out.push({ column: dtCol.sqlName, op: "greaterThan", value: activeTimeFilter.fromText });
+        }
+        if (activeTimeFilter.toEpoch) {
+          out.push({ column: dtCol.sqlName, op: "lessThan", value: formatEpochToUtcText(activeTimeFilter.toEpoch + 1000) });
+        } else if (activeTimeFilter.toText) {
+          out.push({ column: dtCol.sqlName, op: "lessThan", value: activeTimeFilter.toText });
+        }
+      }
+    }
+
     return out;
   }
 
@@ -3538,6 +3808,7 @@
   function clearAllTableFilters() {
     unhideAllRows({ reload: false });
     unhideAllColumns();
+    clearTimeFilter({ reload: false });
     if (isUnifiedCorrelatedMode) {
       exitUnifiedCorrelatedGrid();
       return;
@@ -3580,21 +3851,7 @@
     if (sheetLoadInFlight || tableTransitionInFlight()) return null;
 
     if (isUnifiedCorrelatedMode && table) {
-      const term = (searchBox.value || "").trim().toLowerCase();
-      if (!term) {
-        table.clearFilter();
-      } else {
-        table.setFilter((data) => {
-          return Object.values(data).some((val) => {
-            if (val === null || val === undefined) return false;
-            if (typeof val === "string") return val.toLowerCase().includes(term);
-            if (typeof val === "number") return String(val).includes(term);
-            if (Array.isArray(val)) return val.some((item) => String(item).toLowerCase().includes(term));
-            if (typeof val === "object") return JSON.stringify(val).toLowerCase().includes(term);
-            return false;
-          });
-        });
-      }
+      applyUnifiedFilters();
       return null;
     }
 
@@ -3651,21 +3908,7 @@
     if (sheetLoadInFlight || tableTransitionInFlight()) return;
 
     if (isUnifiedCorrelatedMode && table) {
-      const term = (searchBox.value || "").trim().toLowerCase();
-      if (!term) {
-        table.clearFilter();
-      } else {
-        table.setFilter((data) => {
-          return Object.values(data).some((val) => {
-            if (val === null || val === undefined) return false;
-            if (typeof val === "string") return val.toLowerCase().includes(term);
-            if (typeof val === "number") return String(val).includes(term);
-            if (Array.isArray(val)) return val.some((item) => String(item).toLowerCase().includes(term));
-            if (typeof val === "object") return JSON.stringify(val).toLowerCase().includes(term);
-            return false;
-          });
-        });
-      }
+      applyUnifiedFilters();
       return;
     }
 
@@ -7037,6 +7280,98 @@
       }
     });
   }
+
+  // Time filter popover event listeners
+  if (gridTimeFilterBtn) {
+    gridTimeFilterBtn.addEventListener("click", (e) => {
+      if (e.target && e.target.classList.contains("time-filter-clear-x")) {
+        e.stopPropagation();
+        clearTimeFilter();
+        return;
+      }
+      toggleTimeFilterPopover();
+    });
+  }
+
+  if (timeFilterCloseBtn) {
+    timeFilterCloseBtn.addEventListener("click", () => {
+      closeTimeFilterPopover();
+    });
+  }
+
+  if (timeFilterApplyBtn) {
+    timeFilterApplyBtn.addEventListener("click", () => {
+      applyTimeFilter(timeFilterFrom?.value, timeFilterTo?.value);
+    });
+  }
+
+  if (timeFilterClearBtn) {
+    timeFilterClearBtn.addEventListener("click", () => {
+      clearTimeFilter();
+    });
+  }
+
+  if (timeFilterFrom) {
+    timeFilterFrom.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyTimeFilter(timeFilterFrom?.value, timeFilterTo?.value);
+      }
+    });
+  }
+
+  if (timeFilterTo) {
+    timeFilterTo.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") {
+        e.preventDefault();
+        applyTimeFilter(timeFilterFrom?.value, timeFilterTo?.value);
+      }
+    });
+  }
+
+  if (timeFilterPopover) {
+    timeFilterPopover.addEventListener("click", (e) => {
+      const btn = e.target.closest ? e.target.closest(".btn-time-preset") : null;
+      if (!btn) return;
+      const preset = btn.dataset.preset;
+      let minEpoch = null;
+      let maxEpoch = null;
+      if (isUnifiedCorrelatedMode && Array.isArray(unifiedCorrelatedRows)) {
+        unifiedCorrelatedRows.forEach((ev) => {
+          let ep = ev.epochMs ?? ev.epoch_ms;
+          if (!ep && ev.utcText) ep = parseUserDateTimeToEpoch(ev.utcText);
+          if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
+            if (minEpoch === null || ep < minEpoch) minEpoch = ep;
+            if (maxEpoch === null || ep > maxEpoch) maxEpoch = ep;
+          }
+        });
+      }
+      if (!minEpoch || !maxEpoch) return;
+
+      if (preset === "full") {
+        if (timeFilterFrom) timeFilterFrom.value = formatEpochToUtcText(minEpoch);
+        if (timeFilterTo) timeFilterTo.value = formatEpochToUtcText(maxEpoch);
+      } else if (preset === "last-hour") {
+        if (timeFilterFrom) timeFilterFrom.value = formatEpochToUtcText(Math.max(minEpoch, maxEpoch - 3600 * 1000));
+        if (timeFilterTo) timeFilterTo.value = formatEpochToUtcText(maxEpoch);
+      } else if (preset === "last-24h") {
+        if (timeFilterFrom) timeFilterFrom.value = formatEpochToUtcText(Math.max(minEpoch, maxEpoch - 86400 * 1000));
+        if (timeFilterTo) timeFilterTo.value = formatEpochToUtcText(maxEpoch);
+      } else if (preset === "first-24h") {
+        if (timeFilterFrom) timeFilterFrom.value = formatEpochToUtcText(minEpoch);
+        if (timeFilterTo) timeFilterTo.value = formatEpochToUtcText(Math.min(maxEpoch, minEpoch + 86400 * 1000));
+      }
+    });
+  }
+
+  document.addEventListener("click", (e) => {
+    if (timeFilterPopover && !timeFilterPopover.classList.contains("hidden")) {
+      const wrap = e.target.closest ? e.target.closest(".time-filter-wrap") : null;
+      if (!wrap) {
+        closeTimeFilterPopover();
+      }
+    }
+  });
 
   // Sidebar toggle & persistent state
   function isSidebarCollapsed() {

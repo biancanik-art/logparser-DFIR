@@ -74,6 +74,39 @@
           <div class="pane-title-group">
             <button id="sidebar-toggle-btn" class="btn btn-small" title="Toggle Filter Sidebar">◧ Toggle Filters</button>
             <input id="search-box" type="search" placeholder="Quick search all columns&hellip;" disabled />
+            <div class="time-filter-wrap">
+              <button id="grid-time-filter-btn" class="btn btn-small btn-time-filter" type="button" title="Filter events by Date and Time range (UTC)">🕒 Date/Time Filter</button>
+              <div id="time-filter-popover" class="time-filter-popover hidden">
+                <div class="time-filter-header">
+                  <span>🕒 Date &amp; Time Range Filter (UTC)</span>
+                  <button type="button" id="time-filter-close-btn" class="btn-time-close" title="Close">✕</button>
+                </div>
+                <div class="time-filter-body">
+                  <div id="time-filter-span-info" class="time-filter-span-info">Evidence time window: <span id="time-filter-span-text">—</span></div>
+                  <div class="time-filter-inputs">
+                    <div class="time-input-group">
+                      <label for="time-filter-from">From (UTC):</label>
+                      <input type="text" id="time-filter-from" placeholder="YYYY-MM-DD HH:MM:SS" autocomplete="off" />
+                    </div>
+                    <div class="time-input-group">
+                      <label for="time-filter-to">To (UTC):</label>
+                      <input type="text" id="time-filter-to" placeholder="YYYY-MM-DD HH:MM:SS" autocomplete="off" />
+                    </div>
+                  </div>
+                  <div class="time-filter-presets">
+                    <span class="preset-label">Presets:</span>
+                    <button type="button" class="btn-time-preset" data-preset="full">Full Range</button>
+                    <button type="button" class="btn-time-preset" data-preset="last-hour">Last 1 Hour</button>
+                    <button type="button" class="btn-time-preset" data-preset="last-24h">Last 24 Hours</button>
+                    <button type="button" class="btn-time-preset" data-preset="first-24h">First 24 Hours</button>
+                  </div>
+                </div>
+                <div class="time-filter-footer">
+                  <button type="button" id="time-filter-apply-btn" class="btn btn-primary btn-small">Apply Filter</button>
+                  <button type="button" id="time-filter-clear-btn" class="btn btn-small">Clear</button>
+                </div>
+              </div>
+            </div>
             <button id="grid-cross-search-btn" class="btn btn-small hidden" title="Search this term across all loaded files">🌐 Pivot All Files</button>
             <button id="grid-return-unified-btn" class="btn btn-small btn-unified-return hidden" type="button" title="Return to Unified View and restore initial row position (Esc / Alt+Left)">↩ Return to Unified View (<span id="grid-return-unified-idx">Row #1</span>)</button>
             <div id="grid-active-filter-bar" class="grid-filter-bar hidden">
