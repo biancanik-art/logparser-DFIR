@@ -653,3 +653,90 @@ fn test_compressed_json_gz_cloudtrail_and_auto_fallback() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_recursive_folder_scan_and_batch_evidence_discovery() {
+    use flate2::write::GzEncoder;
+    use flate2::Compression;
+    use log_parser_lib::commands::scan_evidence_directory;
+    use std::fs::{create_dir_all, File};
+    use std::io::Write;
+
+    let temp_root = std::env::temp_dir().join(format!("dfir_folder_scan_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_root);
+    create_dir_all(&temp_root).unwrap();
+
+    let ep1 = temp_root.join("endpoints").join("dc01");
+    let ep2 = temp_root.join("cloud").join("aws");
+    let git_dir = temp_root.join(".git");
+    create_dir_all(&ep1).unwrap();
+    create_dir_all(&ep2).unwrap();
+    create_dir_all(&git_dir).unwrap();
+
+    // 1. Create .jsonl.gz in ep1
+    let jsonl_gz_path = ep1.join("endpoint_activity.jsonl.gz");
+    {
+        let f = File::create(&jsonl_gz_path).unwrap();
+        let mut enc = GzEncoder::new(f, Compression::default());
+        enc.write_all(b"{\"timestamp\":\"2026-10-24T01:00:00Z\",\"user\":\"analyst\"}\n").unwrap();
+        enc.finish().unwrap();
+    }
+
+    // 2. Create .evtx dummy file in ep1
+    let evtx_path = ep1.join("Security.evtx");
+    {
+        let mut f = File::create(&evtx_path).unwrap();
+        f.write_all(b"dummy evtx data").unwrap();
+    }
+
+    // 3. Create .json.gz in ep2
+    let json_gz_path = ep2.join("cloudtrail.json.gz");
+    {
+        let f = File::create(&json_gz_path).unwrap();
+        let mut enc = GzEncoder::new(f, Compression::default());
+        enc.write_all(b"{\"Records\":[{\"event\":\"login\"}]}").unwrap();
+        enc.finish().unwrap();
+    }
+
+    // 4. Create .csv in root
+    let csv_path = temp_root.join("firewall_traffic.csv");
+    {
+        let mut f = File::create(&csv_path).unwrap();
+        f.write_all(b"src,dst,action\n10.0.0.1,10.0.0.2,ALLOW\n").unwrap();
+    }
+
+    // 5. Create ignored files (.tmp and in .git)
+    let tmp_path = temp_root.join("temp_buffer.tmp");
+    {
+        let mut f = File::create(&tmp_path).unwrap();
+        f.write_all(b"temporary cache").unwrap();
+    }
+    let git_file = git_dir.join("HEAD");
+    {
+        let mut f = File::create(&git_file).unwrap();
+        f.write_all(b"ref: refs/heads/master").unwrap();
+    }
+
+    // 6. Execute scan_evidence_directory via tauri async_runtime
+    let summary = tauri::async_runtime::block_on(scan_evidence_directory(
+        temp_root.to_string_lossy().to_string(),
+        Some(true),
+    ))
+    .expect("recursive scan succeeds");
+
+    assert_eq!(summary.total_files_found, 4, "Must find exactly 4 forensic files and skip .tmp/.git");
+    assert!(summary.total_bytes > 0);
+
+    let found_names: Vec<String> = summary.files.iter().map(|f| f.name.clone()).collect();
+    assert!(found_names.contains(&"endpoint_activity.jsonl.gz".to_string()));
+    assert!(found_names.contains(&"Security.evtx".to_string()));
+    assert!(found_names.contains(&"cloudtrail.json.gz".to_string()));
+    assert!(found_names.contains(&"firewall_traffic.csv".to_string()));
+    assert!(!found_names.contains(&"temp_buffer.tmp".to_string()));
+    assert!(!found_names.contains(&"HEAD".to_string()));
+
+    let jsonl_gz_entry = summary.files.iter().find(|f| f.name == "endpoint_activity.jsonl.gz").unwrap();
+    assert!(jsonl_gz_entry.is_compressed);
+
+    let _ = std::fs::remove_dir_all(&temp_root);
+}

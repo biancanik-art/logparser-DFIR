@@ -11,7 +11,9 @@
   <div id="app">
     <header id="toolbar">
       <button id="open-file-btn" class="btn btn-primary">Open File&hellip;</button>
+      <button id="open-folder-btn" class="btn btn-secondary" title="Scan and import all forensic logs in a folder (including .jsonl.gz)">📂 Open Folder&hellip;</button>
       <button id="remove-file-btn" class="btn" disabled>Remove File</button>
+      <button id="clear-all-files-btn" class="btn btn-small" disabled title="Clear all loaded evidence files from workspace" style="display:none;">Clear All</button>
       <div id="file-switcher-wrap" class="file-switcher-wrap hidden">
         <label for="file-switcher" class="file-switcher-label">Active:</label>
         <select id="file-switcher" class="file-switcher" title="Switch loaded file"></select>
@@ -160,8 +162,10 @@
             <span class="offline-badge">Parallel Multi-Log Pivot</span>
           </div>
           <div class="pane-actions">
+            <button id="correlation-add-folder-btn" class="btn btn-small btn-primary" title="Add full folder of evidence files (+ .jsonl.gz)">📂 Add Folder</button>
+            <button id="correlation-add-file-btn" class="btn btn-small" title="Add evidence files">📄 Add Files</button>
             <button id="correlation-analytics-btn" class="btn btn-small" title="View Cloud & JSON Analytics">📊 Cloud &amp; JSON Analytics</button>
-            <button id="correlation-forensic-export-btn" class="btn btn-small" title="Export full 4-sheet forensic Excel report">📥 Forensic Workbook (.xlsx)</button>
+            <button id="correlation-forensic-export-btn" class="btn btn-small" title="Export Master Forensic Report (.xlsx)">📥 Forensic Workbook (.xlsx)</button>
             <button id="correlation-refresh-btn" class="btn btn-small" title="Refresh cross-file analysis">🔄 Refresh</button>
             <button id="correlation-maximize-btn" class="btn btn-small btn-expand-pane" title="Maximize View">⛶ Expand</button>
           </div>

@@ -4,6 +4,8 @@
 
   // -- element refs -----------------------------------------------------
   const openFileBtn = document.getElementById("open-file-btn");
+  const openFolderBtn = document.getElementById("open-folder-btn");
+  const clearAllFilesBtn = document.getElementById("clear-all-files-btn");
   const removeFileBtn = document.getElementById("remove-file-btn");
   const fileInfo = document.getElementById("file-info");
   const searchBox = document.getElementById("search-box");
@@ -4636,6 +4638,102 @@
     }
   }
 
+  async function pickAndOpenFolder() {
+    if (sheetLoadInFlight || batchCachingInFlight) {
+      alert("A file ingestion or background indexing task is currently running. Please wait for it to complete.");
+      return;
+    }
+
+    try {
+      const selected = await invoke("plugin:dialog|open", {
+        options: {
+          directory: true,
+          multiple: false,
+          title: "Select Evidence Folder Containing Forensic Logs (*.jsonl.gz, *.json.gz, *.evtx, etc.)",
+        },
+      });
+
+      if (!selected) return;
+
+      const folderPath = Array.isArray(selected) ? selected[0] : selected;
+      if (!folderPath) return;
+
+      showProgress("Scanning folder for forensic logs...", 0.1);
+
+      const scanResult = await invoke("scan_evidence_directory", {
+        folderPath,
+        recursive: true,
+      });
+
+      hideProgress();
+
+      if (!scanResult || !scanResult.files || scanResult.files.length === 0) {
+        alert(
+          `No supported forensic evidence files found in:\n${folderPath}\n\nSupported formats include:\n- .jsonl.gz, .json.gz, .log.gz, .gz\n- .json, .jsonl, .ndjson\n- .evtx (Windows Event Logs)\n- .csv, .tsv, .tab\n- .log, .syslog, .txt, .xml\n- .xlsx, .xls`
+        );
+        return;
+      }
+
+      const totalFound = scanResult.files.length;
+      const totalMb = (scanResult.totalBytes / (1024 * 1024)).toFixed(1);
+
+      const proceed = confirm(
+        `Discovered ${totalFound} forensic log files (${totalMb} MB) in:\n${folderPath}\n\nDo you want to ingest and index all files in the evidence workspace?`
+      );
+      if (!proceed) return;
+
+      showProgress(`Registering ${totalFound} evidence files...`, 0.15);
+
+      const newPaths = [];
+      scanResult.files.forEach((file) => {
+        if (!loadedFiles.some((f) => f.path === file.path)) {
+          loadedFiles.push({
+            path: file.path,
+            sheet: null,
+            name: file.name,
+            rowCount: null,
+            cacheDbPath: null,
+            indexing: true,
+          });
+          newPaths.push(file.path);
+        }
+      });
+
+      updateFileSwitcherUi();
+      renderCorrelationScope();
+
+      // If active grid has no file currently loaded, load the first file
+      if (!currentPath && newPaths.length > 0) {
+        const targetPath = newPaths[0];
+        try {
+          const sheets = await invoke("list_sheets", { path: targetPath });
+          if (sheets.length > 0) {
+            await loadSheet(sheets[0], {
+              id: ++sourceLoadSequence,
+              path: targetPath,
+              previousPath: null,
+              previousSheet: null,
+            });
+          }
+        } catch (e) {
+          console.warn("Could not immediately display first file:", e);
+        }
+      }
+
+      hideProgress();
+
+      // Batch index all files in background
+      if (newPaths.length > 0) {
+        batchEnsureCached(newPaths).catch((err) => {
+          console.error("batchEnsureCached folder error", err);
+        });
+      }
+    } catch (err) {
+      hideProgress();
+      alert(`Folder import error: ${err}`);
+    }
+  }
+
   let batchCachingInFlight = false;
 
   async function batchEnsureCached(filePaths) {
@@ -4701,6 +4799,18 @@
   }
 
   function updateFileSwitcherUi() {
+    if (clearAllFilesBtn) {
+      if (loadedFiles.length > 1) {
+        clearAllFilesBtn.style.display = "inline-block";
+        clearAllFilesBtn.disabled = false;
+      } else {
+        clearAllFilesBtn.style.display = "none";
+        clearAllFilesBtn.disabled = true;
+      }
+    }
+    if (removeFileBtn) {
+      removeFileBtn.disabled = loadedFiles.length === 0;
+    }
     if (!fileSwitcher || !fileSwitcherWrap) return;
     if (loadedFiles.length > 1) {
       fileSwitcherWrap.classList.remove("hidden");
@@ -7165,6 +7275,38 @@
     exportIocsBtn.addEventListener("click", exportIocsJson);
   }
 
+  if (openFolderBtn) {
+    openFolderBtn.addEventListener("click", () => {
+      pickAndOpenFolder().catch((err) => alert(`Error: ${err}`));
+    });
+  }
+
+  if (clearAllFilesBtn) {
+    clearAllFilesBtn.addEventListener("click", () => {
+      if (loadedFiles.length === 0) return;
+      if (confirm(`Remove all ${loadedFiles.length} loaded evidence files from the workspace?`)) {
+        loadedFiles.length = 0;
+        removeFile();
+        updateFileSwitcherUi();
+        renderCorrelationScope();
+      }
+    });
+  }
+
+  const correlationAddFolderBtn = document.getElementById("correlation-add-folder-btn");
+  if (correlationAddFolderBtn) {
+    correlationAddFolderBtn.addEventListener("click", () => {
+      pickAndOpenFolder().catch((err) => alert(`Error: ${err}`));
+    });
+  }
+
+  const correlationAddFileBtn = document.getElementById("correlation-add-file-btn");
+  if (correlationAddFileBtn) {
+    correlationAddFileBtn.addEventListener("click", () => {
+      pickAndOpenFile().catch((err) => alert(`Error: ${err}`));
+    });
+  }
+
   openFileBtn.addEventListener("click", () => {
     pickAndOpenFile().catch((err) => alert(`Error: ${err}`));
   });
@@ -7799,16 +7941,29 @@
     const path = payload.path;
     const rowCount = payload.rowCount ?? payload.row_count;
     const error = payload.error;
+    const cacheDbPath = payload.cacheDbPath ?? payload.cache_db_path;
     const entry = loadedFiles.find((f) => f.path === path);
     if (entry) {
       if (rowCount != null && rowCount > 0) entry.rowCount = rowCount;
       if (error) {
         entry.error = error;
       }
+      if (cacheDbPath) {
+        entry.cacheDbPath = cacheDbPath;
+      }
       entry.indexing = false;
     }
     updateFileSwitcherUi();
     renderCorrelationScope();
+
+    if (payload.total && payload.total > 1) {
+      if (payload.index < payload.total) {
+        const pct = Math.min(1.0, payload.index / payload.total);
+        showProgress(`Indexing evidence files: ${payload.index} / ${payload.total} (${payload.fileName || ""})...`, pct);
+      } else {
+        hideProgress();
+      }
+    }
   });
 
   listen("semantic-index-progress", (event) => {

@@ -82,6 +82,7 @@ pub fn run() {
             commands::get_ingest_audit,
             commands::get_log_analytics_summary,
             commands::export_forensic_workbook,
+            commands::scan_evidence_directory,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

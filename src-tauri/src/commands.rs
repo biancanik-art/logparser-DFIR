@@ -1975,7 +1975,169 @@ struct BatchCacheProgressPayload {
     path: String,
     file_name: String,
     row_count: i64,
+    cache_db_path: Option<String>,
     error: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiscoveredEvidenceFile {
+    pub path: String,
+    pub name: String,
+    pub extension: String,
+    pub size_bytes: u64,
+    pub is_compressed: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FolderScanSummary {
+    pub folder_path: String,
+    pub total_files_found: usize,
+    pub total_bytes: u64,
+    pub files: Vec<DiscoveredEvidenceFile>,
+}
+
+pub fn is_forensic_evidence_file(file_name: &str) -> bool {
+    let lower = file_name.to_ascii_lowercase();
+    if lower.starts_with('.')
+        || lower.ends_with(".tmp")
+        || lower.ends_with(".lock")
+        || lower.ends_with(".sqlite3")
+        || lower.ends_with(".sqlite3-wal")
+        || lower.ends_with(".sqlite3-shm")
+        || lower.ends_with(".db")
+    {
+        return false;
+    }
+    // Gzip compressed logs (including multi-part logs)
+    if lower.ends_with(".jsonl.gz")
+        || lower.ends_with(".json.gz")
+        || lower.ends_with(".log.gz")
+        || lower.ends_with(".txt.gz")
+        || lower.ends_with(".gz")
+    {
+        return true;
+    }
+    // JSON & JSONL
+    if lower.ends_with(".json") || lower.ends_with(".jsonl") || lower.ends_with(".ndjson") {
+        return true;
+    }
+    // Windows Event Logs
+    if lower.ends_with(".evtx") {
+        return true;
+    }
+    // Delimited
+    if lower.ends_with(".csv") || lower.ends_with(".tsv") || lower.ends_with(".tab") {
+        return true;
+    }
+    // System / plain text logs
+    if lower.ends_with(".log")
+        || lower.ends_with(".syslog")
+        || lower.ends_with(".txt")
+        || lower.ends_with(".xml")
+        || lower == "syslog"
+        || lower == "messages"
+        || lower == "auth.log"
+    {
+        return true;
+    }
+    // Excel workbooks
+    if lower.ends_with(".xlsx")
+        || lower.ends_with(".xls")
+        || lower.ends_with(".xlsb")
+        || lower.ends_with(".ods")
+    {
+        return true;
+    }
+
+    false
+}
+
+pub fn scan_dir_recursive(
+    dir: &Path,
+    current_depth: usize,
+    max_depth: usize,
+    discovered: &mut Vec<DiscoveredEvidenceFile>,
+) {
+    if current_depth > max_depth {
+        return;
+    }
+    let entries = match std::fs::read_dir(dir) {
+        Ok(e) => e,
+        Err(_) => return,
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                let name_lower = name.to_ascii_lowercase();
+                if name_lower.starts_with('.')
+                    || name_lower == "node_modules"
+                    || name_lower == "target"
+                    || name_lower == "$recycle.bin"
+                    || name_lower == "system volume information"
+                {
+                    continue;
+                }
+            }
+            scan_dir_recursive(&path, current_depth + 1, max_depth, discovered);
+        } else if path.is_file() {
+            if let Some(fname) = path.file_name().and_then(|n| n.to_str()) {
+                if is_forensic_evidence_file(fname) {
+                    let size_bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
+                    let ext = path
+                        .extension()
+                        .and_then(|e| e.to_str())
+                        .unwrap_or("")
+                        .to_string();
+                    let is_compressed = fname.to_ascii_lowercase().ends_with(".gz");
+                    discovered.push(DiscoveredEvidenceFile {
+                        path: path.to_string_lossy().to_string(),
+                        name: fname.to_string(),
+                        extension: ext,
+                        size_bytes,
+                        is_compressed,
+                    });
+                }
+            }
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn scan_evidence_directory(
+    folder_path: String,
+    recursive: Option<bool>,
+) -> Result<FolderScanSummary, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let root = Path::new(&folder_path);
+        if !root.exists() || !root.is_dir() {
+            return Err(format!("Directory does not exist or is not a folder: {folder_path}"));
+        }
+
+        let is_recursive = recursive.unwrap_or(true);
+        let max_depth = if is_recursive { 12 } else { 1 };
+        let mut discovered = Vec::new();
+
+        scan_dir_recursive(root, 0, max_depth, &mut discovered);
+
+        // Sort files deterministically by path
+        discovered.sort_by(|a, b| a.path.cmp(&b.path));
+
+        let total_bytes: u64 = discovered.iter().map(|f| f.size_bytes).sum();
+        let total_files_found = discovered.len();
+
+        Ok(FolderScanSummary {
+            folder_path,
+            total_files_found,
+            total_bytes,
+            files: discovered,
+        })
+    })
+    .await
+    .map_err(|e| format!("folder scan error: {e}"))?
 }
 
 #[tauri::command]
@@ -2019,6 +2181,7 @@ pub async fn batch_ensure_cached(
                                     path: target.path,
                                     file_name,
                                     row_count: 0,
+                                    cache_db_path: None,
                                     error: res.error.clone(),
                                 },
                             );
@@ -2050,6 +2213,7 @@ pub async fn batch_ensure_cached(
                                 path: target.path,
                                 file_name,
                                 row_count: 0,
+                                cache_db_path: None,
                                 error: res.error.clone(),
                             },
                         );
@@ -2081,6 +2245,7 @@ pub async fn batch_ensure_cached(
                             path: target.path,
                             file_name,
                             row_count: 0,
+                            cache_db_path: None,
                             error: res.error.clone(),
                         },
                     );
@@ -2113,6 +2278,7 @@ pub async fn batch_ensure_cached(
                                     path: target.path,
                                     file_name,
                                     row_count: info.row_count,
+                                    cache_db_path: Some(db_path.display().to_string()),
                                     error: None,
                                 },
                             );
@@ -2214,6 +2380,11 @@ pub async fn batch_ensure_cached(
                     path: target.path,
                     file_name,
                     row_count: res.row_count,
+                    cache_db_path: if res.cache_db_path.is_empty() {
+                        None
+                    } else {
+                        Some(res.cache_db_path.clone())
+                    },
                     error: res.error.clone(),
                 },
             );
