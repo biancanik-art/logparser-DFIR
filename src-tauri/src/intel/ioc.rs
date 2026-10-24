@@ -726,11 +726,12 @@ fn extract_emails(text: &str) -> Vec<String> {
         let before = &text[..pos];
         let after = &text[pos + 1..];
 
+        // Safe reverse find: must use char_indices and advance by c.len_utf8()
+        // Adding + 1 blindly crashes on multi-byte characters (e.g. smart quotes '”' or Unicode punctuation).
         let local_start = before
-            .rfind(|c: char| {
-                !(c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | '+'))
-            })
-            .map(|i| i + 1)
+            .char_indices()
+            .rfind(|(_, c)| !(c.is_ascii_alphanumeric() || matches!(*c, '.' | '-' | '_' | '+')))
+            .map(|(i, c)| i + c.len_utf8())
             .unwrap_or(0);
         let local = &before[local_start..];
 
@@ -755,25 +756,50 @@ fn extract_emails(text: &str) -> Vec<String> {
     results
 }
 
-/// Extracts URLs (http:// and https://) from text.
+/// Extracts URLs (http:// and https://) from text safely without char boundary desynchronization.
 fn extract_urls(text: &str) -> Vec<String> {
     let mut results = Vec::new();
-    let lower = text.to_lowercase();
+    let bytes = text.as_bytes();
+    let len = bytes.len();
+    let mut i = 0;
 
-    for prefix in &["https://", "http://"] {
-        let mut search_from = 0;
-        while let Some(start) = lower[search_from..].find(prefix) {
-            let abs_start = search_from + start;
-            let url_start = abs_start;
-            let remaining = &text[url_start..];
+    while i + 7 <= len {
+        if !text.is_char_boundary(i) {
+            i += 1;
+            continue;
+        }
+
+        let (is_match, prefix_len) = if i + 8 <= len && bytes[i..i + 8].eq_ignore_ascii_case(b"https://") {
+            (true, 8)
+        } else if bytes[i..i + 7].eq_ignore_ascii_case(b"http://") {
+            (true, 7)
+        } else {
+            (false, 0)
+        };
+
+        if is_match {
+            let remaining = &text[i..];
             let url_end = remaining
-                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '>' | '<' | ')' | ']'))
+                .find(|c: char| {
+                    c.is_whitespace()
+                        || matches!(
+                            c,
+                            '"' | '\'' | '”' | '“' | '’' | '‘' | '`' | '>' | '<' | ')' | ']' | '}' | '{'
+                        )
+                })
                 .unwrap_or(remaining.len());
-            let url = remaining[..url_end].trim_end_matches(|c: char| matches!(c, '.' | ',' | ';'));
-            if url.len() > prefix.len() + 3 && !results.contains(&url.to_string()) {
+            let url = remaining[..url_end].trim_end_matches(|c: char| {
+                matches!(
+                    c,
+                    '.' | ',' | ';' | ':' | ')' | ']' | '}' | '"' | '\'' | '”' | '“' | '’' | '‘'
+                )
+            });
+            if url.len() > prefix_len + 3 && !results.contains(&url.to_string()) {
                 results.push(url.to_string());
             }
-            search_from = url_start + url_end.max(1);
+            i += url_end.max(prefix_len);
+        } else {
+            i += 1;
         }
     }
     results
@@ -1134,11 +1160,27 @@ mod tests {
     }
 
     #[test]
+    fn extract_emails_with_multibyte_and_smart_quotes() {
+        let text = "Log summary: ”user@target.com” sent to ‘another.person@domain.org’ — alert generated";
+        let emails = extract_emails(text);
+        assert_eq!(emails, vec!["user@target.com", "another.person@domain.org"]);
+    }
+
+    #[test]
     fn extract_urls_basic() {
         let urls = extract_urls("visit https://evil.com/payload.exe and http://test.org/path");
         assert_eq!(urls.len(), 2);
         assert!(urls[0].contains("evil.com"));
         assert!(urls[1].contains("test.org"));
+    }
+
+    #[test]
+    fn extract_urls_with_smart_quotes_and_unicode() {
+        let text = "Check out “https://malicious.example.com/login?token=abc” and ‘http://phishing.site/ref’";
+        let urls = extract_urls(text);
+        assert_eq!(urls.len(), 2);
+        assert_eq!(urls[0], "https://malicious.example.com/login?token=abc");
+        assert_eq!(urls[1], "http://phishing.site/ref");
     }
 
     #[test]

@@ -740,3 +740,116 @@ fn test_recursive_folder_scan_and_batch_evidence_discovery() {
 
     let _ = std::fs::remove_dir_all(&temp_root);
 }
+
+#[test]
+fn test_export_from_tabular_cache_without_raw_evidence() {
+    let temp_dir = std::env::temp_dir().join(format!("dfir_export_no_raw_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let db_path = temp_dir.join("tabular_cache.db");
+    let xlsx_path = temp_dir.join("Forensic_Report.xlsx");
+
+    let conn = db::open(&db_path).unwrap();
+
+    // Create table rows with dynamic columns (NO raw_evidence column, exactly like Excel/CSV import)
+    conn.execute_batch(
+        "CREATE TABLE rows (
+            row_num INTEGER PRIMARY KEY,
+            CreationDate TEXT,
+            UserId TEXT,
+            Operation TEXT,
+            Workload TEXT,
+            ClientIP TEXT,
+            ObjectId TEXT,
+            AuditData TEXT
+        );
+        CREATE TABLE _import_info (
+            source_path TEXT NOT NULL,
+            sheet_name TEXT NOT NULL,
+            row_count INTEGER NOT NULL,
+            imported_at TEXT NOT NULL
+        );
+        INSERT INTO _import_info VALUES ('C:\\cases\\evidence.xlsx', 'Sheet1', 2, '2026-10-24 10:00:00');
+        INSERT INTO rows VALUES (
+            1,
+            '2026-10-24T08:15:30Z',
+            'analyst_user@enterprise.com',
+            'MailItemsAccessed',
+            'Exchange',
+            '198.51.100.45',
+            'Inbox/Confidential.eml',
+            '{\"ClientInfoString\":\"Outlook\",\"OperationProperties\":[{\"Name\":\"MailboxOwnerUPN\",\"Value\":\"victim@enterprise.com\"}]}'
+        );
+        INSERT INTO rows VALUES (
+            2,
+            '2026-10-24T08:20:12Z',
+            'admin@enterprise.com',
+            'UserLoggedIn',
+            'AzureActiveDirectory',
+            '203.0.113.88',
+            'UserAccount',
+            '{\"ResultStatus\":\"Success\",\"LogonError\":\"None\"}'
+        );",
+    )
+    .unwrap();
+
+    // Export forensic report - MUST succeed cleanly and NOT panic or fail with "no such column: raw_evidence"
+    let result = export_forensic_workbook(&conn, &xlsx_path, "Lead DFIR Examiner")
+        .expect("Export forensic workbook must succeed for tabular imports without raw_evidence");
+
+    assert_eq!(result.total_exported_records, 2);
+    assert!(xlsx_path.exists());
+    assert!(std::fs::metadata(&xlsx_path).unwrap().len() > 1000);
+
+    let csv_path = std::path::PathBuf::from(&result.csv_timeline_path);
+    assert!(csv_path.exists());
+    let csv_content = std::fs::read_to_string(&csv_path).unwrap();
+    assert!(csv_content.contains("MailItemsAccessed"));
+    assert!(csv_content.contains("analyst_user@enterprise.com"));
+    assert!(csv_content.contains("198.51.100.45"));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
+
+#[test]
+fn test_cross_ioc_overlap_handles_unicode_smart_quotes_without_panic() {
+    let temp_dir = std::env::temp_dir().join(format!("dfir_unicode_ioc_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let db_path = temp_dir.join("unicode_audit.db");
+    let conn = db::open(&db_path).unwrap();
+
+    // Create table with multi-byte smart quotes ” and “
+    conn.execute_batch(
+        "CREATE TABLE rows (
+            row_num INTEGER PRIMARY KEY,
+            AuditData TEXT
+        );
+        CREATE TABLE _meta (
+            sql_name TEXT NOT NULL,
+            original_name TEXT NOT NULL,
+            col_index INTEGER NOT NULL,
+            inferred_type TEXT NOT NULL
+        );
+        INSERT INTO _meta VALUES ('AuditData', 'AuditData', 1, 'text');
+        INSERT INTO rows VALUES (
+            1,
+            'Examiner note: ”suspect@external-domain.org” logged in from 198.51.100.99 via “https://c2.phishing-hub.net/gateway?token=secure”'
+        );",
+    )
+    .unwrap();
+
+    let columns = db::load_columns(&conn).unwrap();
+
+    // extract_iocs must NOT panic with "start byte index ... is not a char boundary; it is inside '”'"
+    let summary = log_parser_lib::intel::ioc::extract_iocs(&conn, &columns, |_, _, _| {})
+        .expect("extract_iocs must succeed on non-ASCII text with smart quotes");
+
+    assert!(summary.ip_indicators.iter().any(|ip| ip.ip == "198.51.100.99"));
+    assert!(summary.email_indicators.iter().any(|em| em.email == "suspect@external-domain.org"));
+    assert!(summary.url_indicators.iter().any(|u| u.url.contains("phishing-hub.net")));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

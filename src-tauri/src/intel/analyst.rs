@@ -43,6 +43,37 @@ impl AnalystIntent {
     }
 }
 
+fn find_ascii_case_insensitive(haystack: &str, needle: &str) -> Option<usize> {
+    let needle_bytes = needle.as_bytes();
+    let n_len = needle_bytes.len();
+    if n_len == 0 {
+        return Some(0);
+    }
+    let h_bytes = haystack.as_bytes();
+    if h_bytes.len() < n_len {
+        return None;
+    }
+    for (idx, _) in haystack.char_indices() {
+        if idx + n_len <= h_bytes.len()
+            && h_bytes[idx..idx + n_len].eq_ignore_ascii_case(needle_bytes)
+        {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+fn safe_truncate_str(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut boundary = max_bytes;
+    while boundary > 0 && !s.is_char_boundary(boundary) {
+        boundary -= 1;
+    }
+    &s[..boundary]
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AnalystStep {
@@ -1795,7 +1826,7 @@ fn build_hunt_section(
                 for (row_num, text) in details.flatten() {
                     let mut extracted = Vec::new();
                     for key in &["ForwardTo", "RedirectTo", "ForwardAsAttachmentTo", "DeliverToMailboxAndForward", "Name", "RuleName", "TargetUser"] {
-                        if let Some(pos) = text.to_lowercase().find(&key.to_lowercase()) {
+                        if let Some(pos) = find_ascii_case_insensitive(&text, key) {
                             let slice = &text[pos..];
                             let snippet: String = slice.chars().take(80).collect();
                             extracted.push(snippet);
@@ -2613,7 +2644,7 @@ fn timeline_section(
 
         let action_str = row.action.as_deref().unwrap_or("").trim();
         let action_display = if action_str.len() > 120 {
-            format!("{}...", &action_str[..117])
+            format!("{}...", safe_truncate_str(action_str, 117))
         } else if !action_str.is_empty() {
             action_str.to_string()
         } else {
@@ -3115,7 +3146,7 @@ pub fn multi_file_timeline(
 
         let action_str = row.action.as_deref().unwrap_or("").trim();
         let action_display = if action_str.len() > 120 {
-            format!("{}...", &action_str[..117])
+            format!("{}...", safe_truncate_str(action_str, 117))
         } else if !action_str.is_empty() {
             action_str.to_string()
         } else {
@@ -3260,7 +3291,7 @@ pub fn multi_file_hunt(
                         }
                         let mut extracted = Vec::new();
                         for key in &["ForwardTo", "RedirectTo", "ForwardAsAttachmentTo", "DeliverToMailboxAndForward", "Name", "RuleName", "TargetUser"] {
-                            if let Some(pos) = text.to_lowercase().find(&key.to_lowercase()) {
+                            if let Some(pos) = find_ascii_case_insensitive(&text, key) {
                                 let slice = &text[pos..];
                                 let snippet: String = slice.chars().take(80).collect();
                                 extracted.push(snippet);
