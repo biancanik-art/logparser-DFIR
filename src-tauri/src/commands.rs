@@ -3064,7 +3064,15 @@ pub async fn export_ioc_overlap_file(
                         .map_err(|e| e.to_string())?;
                 }
 
-                worksheet.autofit();
+                worksheet.set_column_width(0, 18).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(1, 45).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(2, 14).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(3, 18).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(4, 20).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(5, 50).map_err(|e| e.to_string())?;
+                if items.len() <= 5000 {
+                    worksheet.autofit();
+                }
                 workbook.save(&path).map_err(|e| e.to_string())?;
             }
             _ => {

@@ -159,6 +159,7 @@
   const crossSearchResults = document.getElementById("cross-search-results");
   const crossIocScanBtn = document.getElementById("cross-ioc-scan-btn");
   const crossIocExportBtn = document.getElementById("cross-ioc-export-btn");
+  const crossIocExportAllBtn = document.getElementById("cross-ioc-export-all-btn");
   const crossIocStatus = document.getElementById("cross-ioc-status");
   const crossIocResults = document.getElementById("cross-ioc-results");
   const crossIocSearch = document.getElementById("cross-ioc-search");
@@ -6579,6 +6580,7 @@
       const summary = await invoke("cross_ioc_overlap", { files: filesPayload });
       crossIocSummary = summary;
       crossIocExportBtn.disabled = false;
+      if (crossIocExportAllBtn) crossIocExportAllBtn.disabled = false;
       renderCrossIocResults();
     } catch (err) {
       console.error("cross_ioc_overlap error", err);
@@ -6632,6 +6634,24 @@
     }
     if (q) {
       filtered = filtered.filter((i) => i.value.toLowerCase().includes(q));
+    }
+
+    if (crossIocExportBtn && crossIocSummary) {
+      const isOverlap = crossIocActiveFilter === "overlap";
+      if (isOverlap && crossIocActiveType === "all" && !q) {
+        crossIocExportBtn.textContent = `📥 Export Overlap (${crossIocSummary.overlappingCount.toLocaleString()})`;
+        crossIocExportBtn.title = "Export shared indicators appearing across 2+ files";
+      } else if (!isOverlap && crossIocActiveType === "all" && !q) {
+        crossIocExportBtn.textContent = `📥 Export All (${crossIocSummary.totalUniqueIocs.toLocaleString()})`;
+        crossIocExportBtn.title = "Export all unique extracted indicators across all evidence files";
+      } else {
+        crossIocExportBtn.textContent = `📥 Export Filtered (${filtered.length.toLocaleString()})`;
+        crossIocExportBtn.title = `Export the ${filtered.length.toLocaleString()} indicators matching the active filter`;
+      }
+    }
+    if (crossIocExportAllBtn && crossIocSummary) {
+      crossIocExportAllBtn.textContent = `📥 Export All IOCs (${crossIocSummary.totalUniqueIocs.toLocaleString()})`;
+      crossIocExportAllBtn.disabled = false;
     }
 
     crossIocResults.innerHTML = "";
@@ -6758,14 +6778,41 @@
     }
   }
 
-  async function exportCrossIocs() {
+  async function exportCrossIocs(opts = {}) {
     if (!crossIocSummary || !crossIocSummary.items || crossIocSummary.items.length === 0) {
       alert("No cross-file IOC data available to export. Run 'Scan All Files for IOCs' first.");
       return;
     }
 
+    const exportAll = Boolean(opts && opts.exportAll);
+    let itemsToExport = crossIocSummary.items;
+    let defaultFilename = `all_unique_iocs_${new Date().toISOString().slice(0, 10)}.xlsx`;
+
+    if (!exportAll) {
+      if (crossIocActiveFilter === "overlap") {
+        itemsToExport = itemsToExport.filter((i) => i.fileCount >= 2);
+        defaultFilename = `cross_file_ioc_overlap_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      }
+      if (crossIocActiveType !== "all") {
+        if (crossIocActiveType === "message_id") {
+          itemsToExport = itemsToExport.filter(
+            (i) =>
+              i.iocType === "message_id" ||
+              i.iocType === "internet_message_id" ||
+              i.iocType === "network_message_id"
+          );
+        } else {
+          itemsToExport = itemsToExport.filter((i) => i.iocType === crossIocActiveType);
+        }
+        defaultFilename = `iocs_${crossIocActiveType}_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      }
+      const q = (crossIocSearch.value || "").trim().toLowerCase();
+      if (q) {
+        itemsToExport = itemsToExport.filter((i) => i.value.toLowerCase().includes(q));
+      }
+    }
+
     try {
-      const defaultFilename = `cross_file_ioc_overlap_${new Date().toISOString().slice(0, 10)}.xlsx`;
       const destPath = await invoke("plugin:dialog|save", {
         options: {
           filters: [
@@ -6779,35 +6826,14 @@
 
       if (!destPath) return;
 
-      // Filter according to currently active tab filter (e.g. overlap vs all)
-      let itemsToExport = crossIocSummary.items;
-      if (crossIocActiveFilter === "overlap") {
-        itemsToExport = itemsToExport.filter((i) => i.fileCount >= 2);
-      }
-      if (crossIocActiveType !== "all") {
-        if (crossIocActiveType === "message_id") {
-          itemsToExport = itemsToExport.filter(
-            (i) =>
-              i.iocType === "message_id" ||
-              i.iocType === "internet_message_id" ||
-              i.iocType === "network_message_id"
-          );
-        } else {
-          itemsToExport = itemsToExport.filter((i) => i.iocType === crossIocActiveType);
-        }
-      }
-      const q = (crossIocSearch.value || "").trim().toLowerCase();
-      if (q) {
-        itemsToExport = itemsToExport.filter((i) => i.value.toLowerCase().includes(q));
-      }
-
-      showProgress("Exporting IOC overlap...", 0.5);
+      const countToExport = itemsToExport.length > 0 ? itemsToExport.length : crossIocSummary.items.length;
+      showProgress(`Exporting ${countToExport.toLocaleString()} indicators...`, 0.5);
       const count = await invoke("export_ioc_overlap_file", {
         destPath,
         items: itemsToExport.length > 0 ? itemsToExport : crossIocSummary.items,
       });
       hideProgress();
-      alert(`Export complete!\n\nSuccessfully wrote ${count} indicators to:\n${destPath}`);
+      alert(`Export complete!\n\nSuccessfully wrote ${count.toLocaleString()} indicators to:\n${destPath}`);
     } catch (err) {
       hideProgress();
       console.error("exportCrossIocs failed", err);
@@ -7530,7 +7556,10 @@
     crossIocScanBtn.addEventListener("click", runCrossIocScan);
   }
   if (crossIocExportBtn) {
-    crossIocExportBtn.addEventListener("click", exportCrossIocs);
+    crossIocExportBtn.addEventListener("click", () => exportCrossIocs({ exportAll: false }));
+  }
+  if (crossIocExportAllBtn) {
+    crossIocExportAllBtn.addEventListener("click", () => exportCrossIocs({ exportAll: true }));
   }
   if (correlationRefreshBtn) {
     correlationRefreshBtn.addEventListener("click", () => {
