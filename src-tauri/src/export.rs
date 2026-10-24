@@ -1,6 +1,7 @@
 use crate::db::ColumnMeta;
 use crate::intel::time;
 use crate::query::{self, QuerySpec};
+pub use crate::commands::FileTarget;
 use anyhow::{Context, Result};
 use rusqlite::Connection;
 use rust_xlsxwriter::Workbook;
@@ -519,6 +520,20 @@ pub fn export_unified_multisheet_xlsx(
                 timeline_sheet.write_string(0, col_idx as u16, *header)?;
             }
 
+            // Also collect and write all unique evidence columns from source files
+            let mut custom_field_names: Vec<String> = Vec::new();
+            for ev in events {
+                for k in ev.raw_fields.keys() {
+                    if !custom_field_names.contains(k) {
+                        custom_field_names.push(k.clone());
+                    }
+                }
+            }
+
+            for (cf_idx, cf_name) in custom_field_names.iter().enumerate() {
+                timeline_sheet.write_string(0, (11 + cf_idx) as u16, cf_name)?;
+            }
+
             for (row_idx, ev) in events.iter().enumerate() {
                 let excel_row = (row_idx + 1) as u32;
                 timeline_sheet.write_number(excel_row, 0, (row_idx + 1) as f64)?;
@@ -567,6 +582,15 @@ pub fn export_unified_multisheet_xlsx(
                     10,
                     crate::report::excel_safe_string(&tags_str).as_ref(),
                 )?;
+
+                for (cf_idx, cf_name) in custom_field_names.iter().enumerate() {
+                    let val = ev.raw_fields.get(cf_name).map(|s| s.as_str()).unwrap_or("");
+                    timeline_sheet.write_string(
+                        excel_row,
+                        (11 + cf_idx) as u16,
+                        crate::report::excel_safe_string(val).as_ref(),
+                    )?;
+                }
             }
 
             // Set clean column widths for Unified Timeline
@@ -1340,6 +1364,7 @@ mod tests {
                 action: Some("UserLoggedIn".to_string()),
                 details: Some("[200 OK] | method=POST | path=/api/login".to_string()),
                 mitre_tags: vec!["T1078 Valid Accounts".to_string()],
+                raw_fields: std::collections::HashMap::new(),
             },
             CorrelatedTimelineEvent {
                 file_name: "network_flow.csv".to_string(),
@@ -1352,6 +1377,7 @@ mod tests {
                 action: Some("ForwardRule".to_string()),
                 details: Some("query=rule=forward&dest=ext".to_string()),
                 mitre_tags: vec!["T1114.003 Email Forwarding".to_string()],
+                raw_fields: std::collections::HashMap::new(),
             },
         ];
 

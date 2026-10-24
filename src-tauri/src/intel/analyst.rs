@@ -118,6 +118,8 @@ pub struct CorrelatedTimelineEvent {
     pub details: Option<String>,
     #[serde(default, alias = "mitreTags", alias = "mitre_tags")]
     pub mitre_tags: Vec<String>,
+    #[serde(default, alias = "rawFields", alias = "raw_fields")]
+    pub raw_fields: HashMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -2735,6 +2737,13 @@ pub fn extract_correlated_events_for_rows(
     add_col(&resolved.referer_col);
     add_col(&resolved.detail_col);
 
+    // Include all evidence columns so the Unified Grid can display full file columns
+    for c in columns {
+        if !selected_cols.contains(&c.sql_name) {
+            selected_cols.push(c.sql_name.clone());
+        }
+    }
+
     let mut select_sql = String::new();
     for c in &selected_cols {
         select_sql.push_str(&format!(", r.{}", db::quote_ident(c)));
@@ -2855,6 +2864,35 @@ pub fn extract_correlated_events_for_rows(
                 detail.as_deref(),
             );
 
+            let mut raw_fields: HashMap<String, String> = HashMap::new();
+            for c in columns {
+                if let Some(&idx) = col_idx_map.get(&c.sql_name) {
+                    if let Ok(Some(val)) = r.get::<_, Option<String>>(idx) {
+                        let trimmed = val.trim();
+                        if !trimmed.is_empty() {
+                            raw_fields.insert(c.original_name.clone(), trimmed.to_string());
+                        }
+                    }
+                }
+            }
+
+            if let Some(raw_ev) = raw_fields.get("raw_evidence").cloned() {
+                if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(&raw_ev) {
+                    for (k, v) in map {
+                        if !raw_fields.contains_key(&k) {
+                            let s = match v {
+                                serde_json::Value::String(st) => st,
+                                other => other.to_string(),
+                            };
+                            let trimmed = s.trim();
+                            if !trimmed.is_empty() {
+                                raw_fields.insert(k, trimmed.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+
             Ok((
                 r.get::<_, i64>(0)?,
                 final_epoch,
@@ -2863,6 +2901,7 @@ pub fn extract_correlated_events_for_rows(
                 host,
                 action,
                 details,
+                raw_fields,
             ))
         });
         if let Ok(rows) = rows_res {
@@ -2880,6 +2919,7 @@ pub fn extract_correlated_events_for_rows(
                     action: r.5,
                     details: r.6,
                     mitre_tags: tags,
+                    raw_fields: r.7,
                 });
             }
         }
@@ -3535,6 +3575,7 @@ pub fn multi_file_hunt(
             action: e.action.clone(),
             details: e.details.clone(),
             mitre_tags: e.mitre_tags.clone(),
+            raw_fields: e.raw_fields.clone(),
         })
         .collect();
 

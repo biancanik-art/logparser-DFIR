@@ -1308,21 +1308,57 @@
 
     const tableData = events
       .filter((ev) => !hiddenRowNums.has(ev.rowNum))
-      .map((ev, idx) => ({
-        id: idx + 1,
-        _unifiedIndex: idx + 1,
-        rowNum: ev.rowNum,
-        row_num: ev.rowNum,
-        fileName: ev.fileName || (ev.path ? ev.path.split(/[\\/]/).pop() : "File"),
-        path: ev.path,
-        epochMs: ev.epochMs,
-        utcText: ev.utcText || "—",
-        user: ev.user || "—",
-        host: ev.host || "—",
-        action: ev.action || "—",
-        details: ev.details || ev.rawDetails || ev.raw_details || "—",
-        mitreTags: Array.isArray(ev.mitreTags) ? ev.mitreTags : [],
-      }));
+      .map((ev, idx) => {
+        const rawF = ev.rawFields || ev.raw_fields || {};
+        const row = {
+          id: idx + 1,
+          _unifiedIndex: idx + 1,
+          rowNum: ev.rowNum,
+          row_num: ev.rowNum,
+          fileName: ev.fileName || (ev.path ? ev.path.split(/[\\/]/).pop() : "File"),
+          path: ev.path,
+          epochMs: ev.epochMs,
+          utcText: ev.utcText || "—",
+          user: ev.user || "—",
+          host: ev.host || "—",
+          action: ev.action || "—",
+          details: ev.details || ev.rawDetails || ev.raw_details || "—",
+          mitreTags: Array.isArray(ev.mitreTags) ? ev.mitreTags : [],
+          rawFields: rawF,
+          raw_fields: rawF,
+        };
+        for (const [k, v] of Object.entries(rawF)) {
+          if (row[k] === undefined || row[k] === "—") {
+            row[k] = v;
+          } else if (!row.hasOwnProperty(k)) {
+            row[k] = v;
+          }
+        }
+        return row;
+      });
+
+    const customColNames = [];
+    const seenColNames = new Set();
+    const standardFields = new Set([
+      "_unifiedIndex", "id", "rowNum", "row_num", "fileName", "file_name", "path",
+      "epochMs", "epoch_ms", "utcText", "utc_text", "mitreTags", "mitre_tags",
+      "rawFields", "raw_fields", "raw_evidence"
+    ]);
+
+    events.forEach((ev) => {
+      const rf = ev.rawFields || ev.raw_fields;
+      if (rf && typeof rf === "object") {
+        Object.keys(rf).forEach((k) => {
+          const trimmed = k.trim();
+          if (trimmed && !seenColNames.has(trimmed) && !standardFields.has(trimmed)) {
+            seenColNames.add(trimmed);
+            customColNames.push(trimmed);
+          }
+        });
+      }
+    });
+
+    const hasAnyMitreTags = events.some((ev) => Array.isArray(ev.mitreTags) && ev.mitreTags.length > 0);
 
     const unifiedColumns = [
       {
@@ -1411,88 +1447,10 @@
           return ea - eb;
         },
       },
-      {
-        title: "👤 User / Identity",
-        field: "user",
-        width: 180,
-        minWidth: 130,
-        headerSort: true,
-        visible: !hiddenColFields.has("user"),
-        headerClick(e, col) {
-          if (e && (e.ctrlKey || e.metaKey)) {
-            toggleColumnSelection(col.getField());
-            return;
-          }
-          if (e && e.altKey) {
-            hideColumn(col.getField());
-          }
-        },
-        formatter(cell) {
-          const val = cell.getValue();
-          return val && val !== "—" ? `<span style="font-weight:600;">${escapeHtml(val)}</span>` : `<span style="color:var(--text-muted);">—</span>`;
-        },
-      },
-      {
-        title: "💻 Host / IP",
-        field: "host",
-        width: 160,
-        minWidth: 120,
-        headerSort: true,
-        visible: !hiddenColFields.has("host"),
-        headerClick(e, col) {
-          if (e && (e.ctrlKey || e.metaKey)) {
-            toggleColumnSelection(col.getField());
-            return;
-          }
-          if (e && e.altKey) {
-            hideColumn(col.getField());
-          }
-        },
-        formatter(cell) {
-          const val = cell.getValue();
-          return val && val !== "—" ? `<code>${escapeHtml(val)}</code>` : `<span style="color:var(--text-muted);">—</span>`;
-        },
-      },
-      {
-        title: "⚡ Operation / Action",
-        field: "action",
-        minWidth: 260,
-        headerSort: true,
-        visible: !hiddenColFields.has("action"),
-        headerClick(e, col) {
-          if (e && (e.ctrlKey || e.metaKey)) {
-            toggleColumnSelection(col.getField());
-            return;
-          }
-          if (e && e.altKey) {
-            hideColumn(col.getField());
-          }
-        },
-        formatter(cell) {
-          const val = cell.getValue();
-          return `<span>${escapeHtml(val || "—")}</span>`;
-        },
-      },
-      {
-        title: "📋 Details / Parameters",
-        field: "details",
-        minWidth: 280,
-        headerSort: true,
-        visible: !hiddenColFields.has("details"),
-        headerClick(e, col) {
-          if (e && (e.ctrlKey || e.metaKey)) {
-            toggleColumnSelection(col.getField());
-            return;
-          }
-          if (e && e.altKey) {
-            hideColumn(col.getField());
-          }
-        },
-        formatter(cell) {
-          return formatUnifiedDetails(cell.getValue());
-        },
-      },
-      {
+    ];
+
+    if (hasAnyMitreTags) {
+      unifiedColumns.push({
         title: "🛡️ MITRE / Tags",
         field: "mitreTags",
         minWidth: 170,
@@ -1514,10 +1472,124 @@
             .map((t) => `<span class="cross-ioc-meta-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3);margin-right:4px;">${escapeHtml(t)}</span>`)
             .join("");
         },
-      },
-    ];
+      });
+    }
+
+    if (customColNames.length > 0) {
+      customColNames.forEach((colName) => {
+        unifiedColumns.push({
+          title: colName,
+          field: colName,
+          resizable: true,
+          headerSort: true,
+          minWidth: 140,
+          visible: !hiddenColFields.has(colName),
+          headerClick(e, col) {
+            if (e && (e.ctrlKey || e.metaKey)) {
+              toggleColumnSelection(col.getField());
+              return;
+            }
+            if (e && e.altKey) {
+              hideColumn(col.getField());
+            }
+          },
+          formatter(cell) {
+            const val = cell.getValue();
+            if (val === null || val === undefined || val === "") {
+              return `<span style="color:var(--text-muted);">—</span>`;
+            }
+            return `<span>${escapeHtml(String(val))}</span>`;
+          },
+        });
+      });
+    } else {
+      unifiedColumns.push(
+        {
+          title: "👤 User / Identity",
+          field: "user",
+          width: 180,
+          minWidth: 130,
+          headerSort: true,
+          visible: !hiddenColFields.has("user"),
+          headerClick(e, col) {
+            if (e && (e.ctrlKey || e.metaKey)) {
+              toggleColumnSelection(col.getField());
+              return;
+            }
+            if (e && e.altKey) {
+              hideColumn(col.getField());
+            }
+          },
+          formatter(cell) {
+            const val = cell.getValue();
+            return val && val !== "—" ? `<span style="font-weight:600;">${escapeHtml(val)}</span>` : `<span style="color:var(--text-muted);">—</span>`;
+          },
+        },
+        {
+          title: "💻 Host / IP",
+          field: "host",
+          width: 160,
+          minWidth: 120,
+          headerSort: true,
+          visible: !hiddenColFields.has("host"),
+          headerClick(e, col) {
+            if (e && (e.ctrlKey || e.metaKey)) {
+              toggleColumnSelection(col.getField());
+              return;
+            }
+            if (e && e.altKey) {
+              hideColumn(col.getField());
+            }
+          },
+          formatter(cell) {
+            const val = cell.getValue();
+            return val && val !== "—" ? `<code>${escapeHtml(val)}</code>` : `<span style="color:var(--text-muted);">—</span>`;
+          },
+        },
+        {
+          title: "⚡ Operation / Action",
+          field: "action",
+          minWidth: 260,
+          headerSort: true,
+          visible: !hiddenColFields.has("action"),
+          headerClick(e, col) {
+            if (e && (e.ctrlKey || e.metaKey)) {
+              toggleColumnSelection(col.getField());
+              return;
+            }
+            if (e && e.altKey) {
+              hideColumn(col.getField());
+            }
+          },
+          formatter(cell) {
+            const val = cell.getValue();
+            return `<span>${escapeHtml(val || "—")}</span>`;
+          },
+        },
+        {
+          title: "📋 Details / Parameters",
+          field: "details",
+          minWidth: 280,
+          headerSort: true,
+          visible: !hiddenColFields.has("details"),
+          headerClick(e, col) {
+            if (e && (e.ctrlKey || e.metaKey)) {
+              toggleColumnSelection(col.getField());
+              return;
+            }
+            if (e && e.altKey) {
+              hideColumn(col.getField());
+            }
+          },
+          formatter(cell) {
+            return formatUnifiedDetails(cell.getValue());
+          },
+        }
+      );
+    }
 
     if (table) {
+      if (table.options) table.options.nestedFieldSeparator = false;
       table.setColumns(unifiedColumns);
       table.replaceData(tableData).then(() => {
         if (resolvedIndex) {
@@ -1532,6 +1604,7 @@
         layout: "fitDataFill",
         height: "100%",
         placeholder: "No matching rows",
+        nestedFieldSeparator: false,
       });
       table.on("tableBuilt", () => {
         if (resolvedIndex) {
@@ -1828,6 +1901,7 @@
         : Array.isArray(r.mitre_tags)
         ? r.mitre_tags
         : [],
+      rawFields: r.rawFields || r.raw_fields || {},
     }));
 
     if (format === "xlsx") {
@@ -1858,6 +1932,27 @@
 
     showProgress(`Exporting unified timeline to CSV…`, 0.5);
     try {
+      const customColSet = new Set();
+      const standardExcluded = new Set([
+        "id", "_unifiedIndex", "rowNum", "row_num", "fileName", "file_name", "path",
+        "epochMs", "epoch_ms", "utcText", "utc_text", "user", "host", "action",
+        "details", "rawDetails", "raw_details", "mitreTags", "mitre_tags",
+        "rawFields", "raw_fields", "raw_evidence"
+      ]);
+      rowsToExport.forEach((r) => {
+        const rf = r.rawFields || r.raw_fields;
+        if (rf && typeof rf === "object") {
+          Object.keys(rf).forEach((k) => {
+            if (k && !standardExcluded.has(k)) customColSet.add(k);
+          });
+        }
+        Object.keys(r).forEach((k) => {
+          if (k && !standardExcluded.has(k) && typeof r[k] !== "function" && typeof r[k] !== "object") {
+            customColSet.add(k);
+          }
+        });
+      });
+      const customCols = Array.from(customColSet);
       const headers = [
         "Index",
         "Source File",
@@ -1870,6 +1965,7 @@
         "Operation / Action",
         "Details / Parameters",
         "MITRE / Threat Tags",
+        ...customCols,
       ];
       const escapeCsvField = (f) => {
         const str = String(f ?? "");
@@ -1881,6 +1977,7 @@
 
       const lines = [headers.join(",")];
       rowsToExport.forEach((ev, i) => {
+        const rf = ev.rawFields || ev.raw_fields || {};
         const rowVals = [
           i + 1,
           ev.fileName || "",
@@ -1893,6 +1990,10 @@
           ev.action || "",
           (ev.details === "—" ? "" : ev.details) || ev.rawDetails || ev.raw_details || "",
           Array.isArray(ev.mitreTags) ? ev.mitreTags.join("; ") : "",
+          ...customCols.map((colName) => {
+            const val = rf[colName] ?? ev[colName] ?? "";
+            return val;
+          }),
         ];
         lines.push(rowVals.map(escapeCsvField).join(","));
       });
@@ -3454,15 +3555,14 @@
         table.clearFilter();
       } else {
         table.setFilter((data) => {
-          return (
-            (data.fileName && data.fileName.toLowerCase().includes(term)) ||
-            (data.utcText && data.utcText.toLowerCase().includes(term)) ||
-            (data.user && data.user.toLowerCase().includes(term)) ||
-            (data.host && data.host.toLowerCase().includes(term)) ||
-            (data.action && data.action.toLowerCase().includes(term)) ||
-            (data.details && data.details.toLowerCase().includes(term)) ||
-            (Array.isArray(data.mitreTags) && data.mitreTags.some((t) => t.toLowerCase().includes(term)))
-          );
+          return Object.values(data).some((val) => {
+            if (val === null || val === undefined) return false;
+            if (typeof val === "string") return val.toLowerCase().includes(term);
+            if (typeof val === "number") return String(val).includes(term);
+            if (Array.isArray(val)) return val.some((item) => String(item).toLowerCase().includes(term));
+            if (typeof val === "object") return JSON.stringify(val).toLowerCase().includes(term);
+            return false;
+          });
         });
       }
       return null;
@@ -3526,15 +3626,14 @@
         table.clearFilter();
       } else {
         table.setFilter((data) => {
-          return (
-            (data.fileName && data.fileName.toLowerCase().includes(term)) ||
-            (data.utcText && data.utcText.toLowerCase().includes(term)) ||
-            (data.user && data.user.toLowerCase().includes(term)) ||
-            (data.host && data.host.toLowerCase().includes(term)) ||
-            (data.action && data.action.toLowerCase().includes(term)) ||
-            (data.details && data.details.toLowerCase().includes(term)) ||
-            (Array.isArray(data.mitreTags) && data.mitreTags.some((t) => t.toLowerCase().includes(term)))
-          );
+          return Object.values(data).some((val) => {
+            if (val === null || val === undefined) return false;
+            if (typeof val === "string") return val.toLowerCase().includes(term);
+            if (typeof val === "number") return String(val).includes(term);
+            if (Array.isArray(val)) return val.some((item) => String(item).toLowerCase().includes(term));
+            if (typeof val === "object") return JSON.stringify(val).toLowerCase().includes(term);
+            return false;
+          });
         });
       }
       return;

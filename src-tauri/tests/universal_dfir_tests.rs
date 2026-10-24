@@ -853,3 +853,98 @@ fn test_cross_ioc_overlap_handles_unicode_smart_quotes_without_panic() {
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_unified_grid_and_multisheet_custom_columns_preservation() {
+    use log_parser_lib::export::{export_unified_multisheet_xlsx, FileTarget};
+    use log_parser_lib::intel::analyst::extract_correlated_events_for_rows;
+    use calamine::{open_workbook, Reader, Xlsx};
+
+    let temp_dir = std::env::temp_dir().join(format!("dfir_unified_cols_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let db1_path = temp_dir.join("o365.db");
+    let conn1 = db::open(&db1_path).unwrap();
+    let cols1 = vec![
+        db::ColumnMeta { sql_name: "CreationDate".into(), original_name: "CreationDate".into(), col_index: 0, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "UserId".into(), original_name: "UserId".into(), col_index: 1, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "Operation".into(), original_name: "Operation".into(), col_index: 2, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "Workload".into(), original_name: "Workload".into(), col_index: 3, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "ClientIP".into(), original_name: "ClientIP".into(), col_index: 4, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "ObjectId".into(), original_name: "ObjectId".into(), col_index: 5, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "ResultStatus".into(), original_name: "ResultStatus".into(), col_index: 6, inferred_type: "text".into() },
+    ];
+    db::create_schema(&conn1, &cols1).unwrap();
+    conn1.execute(
+        "INSERT INTO rows (row_num, CreationDate, UserId, Operation, Workload, ClientIP, ObjectId, ResultStatus)
+         VALUES (1, '2026-10-24T12:00:00Z', 'admin@example.com', 'FileDownloaded', 'OneDrive', '198.51.100.25', 'Confidential_Doc.pdf', 'Success')",
+        [],
+    ).unwrap();
+
+    let db2_path = temp_dir.join("netflow.db");
+    let conn2 = db::open(&db2_path).unwrap();
+    let cols2 = vec![
+        db::ColumnMeta { sql_name: "Timestamp".into(), original_name: "Timestamp".into(), col_index: 0, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "SourceIp".into(), original_name: "SourceIp".into(), col_index: 1, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "DestIp".into(), original_name: "DestIp".into(), col_index: 2, inferred_type: "text".into() },
+        db::ColumnMeta { sql_name: "RuleAction".into(), original_name: "RuleAction".into(), col_index: 3, inferred_type: "text".into() },
+    ];
+    db::create_schema(&conn2, &cols2).unwrap();
+    conn2.execute(
+        "INSERT INTO rows (row_num, Timestamp, SourceIp, DestIp, RuleAction)
+         VALUES (1, '2026-10-24T12:05:00Z', '198.51.100.25', '203.0.113.50', 'BlockDrop')",
+        [],
+    ).unwrap();
+
+    // Extract correlated events for both files
+    let ev1 = extract_correlated_events_for_rows(&conn1, &cols1, &[1], "o365_audit.jsonl", "o365_audit.jsonl");
+    let ev2 = extract_correlated_events_for_rows(&conn2, &cols2, &[1], "network_firewall.csv", "network_firewall.csv");
+
+    assert_eq!(ev1.len(), 1);
+    assert_eq!(ev2.len(), 1);
+
+    // Verify all source columns are preserved in raw_fields
+    let r1 = &ev1[0];
+    assert_eq!(r1.raw_fields.get("Workload").map(|s| s.as_str()), Some("OneDrive"));
+    assert_eq!(r1.raw_fields.get("ObjectId").map(|s| s.as_str()), Some("Confidential_Doc.pdf"));
+    assert_eq!(r1.raw_fields.get("ResultStatus").map(|s| s.as_str()), Some("Success"));
+    assert_eq!(r1.raw_fields.get("ClientIP").map(|s| s.as_str()), Some("198.51.100.25"));
+
+    let r2 = &ev2[0];
+    assert_eq!(r2.raw_fields.get("RuleAction").map(|s| s.as_str()), Some("BlockDrop"));
+    assert_eq!(r2.raw_fields.get("SourceIp").map(|s| s.as_str()), Some("198.51.100.25"));
+    assert_eq!(r2.raw_fields.get("DestIp").map(|s| s.as_str()), Some("203.0.113.50"));
+
+    // Export to multi-sheet Excel
+    let targets = vec![
+        FileTarget {
+            path: "o365_audit.jsonl".to_string(),
+            sheet: None,
+            cache_db_path: Some(db1_path.to_string_lossy().to_string()),
+        },
+        FileTarget {
+            path: "network_firewall.csv".to_string(),
+            sheet: None,
+            cache_db_path: Some(db2_path.to_string_lossy().to_string()),
+        },
+    ];
+    let all_events = vec![r1.clone(), r2.clone()];
+    let export_xlsx = temp_dir.join("unified_all_columns.xlsx");
+
+    let summary = export_unified_multisheet_xlsx(&targets, &all_events, &export_xlsx).unwrap();
+    assert_eq!(summary.total_events, 2);
+    assert_eq!(summary.sheets_written.len(), 3);
+
+    // Verify using Calamine that the master timeline has custom columns written
+    let mut xl: Xlsx<_> = open_workbook(&export_xlsx).expect("open excel");
+    let range = xl.worksheet_range("Unified Timeline").unwrap();
+    let header_row: Vec<String> = (0..range.width()).map(|col| range.get((0, col)).map(|c| c.to_string()).unwrap_or_default()).collect();
+
+    assert!(header_row.contains(&"Workload".to_string()));
+    assert!(header_row.contains(&"ObjectId".to_string()));
+    assert!(header_row.contains(&"ResultStatus".to_string()));
+    assert!(header_row.contains(&"RuleAction".to_string()));
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}
