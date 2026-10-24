@@ -401,7 +401,11 @@ pub fn open(db_path: &Path) -> rusqlite::Result<Connection> {
     // so the first uncontended open converts it once and every later open is a no-op. (The
     // pragma returns a result row, so it must run as a query, not execute.)
     let _ = conn.query_row("PRAGMA journal_mode = WAL", [], |_| Ok(()));
-    conn.execute_batch("PRAGMA synchronous = NORMAL;")?;
+    conn.execute_batch(
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA cache_size = -65536;
+         PRAGMA shrink_memory;",
+    )?;
     scavenge_abandoned_row_time_objects(&mut conn)?;
     Ok(conn)
 }
@@ -413,7 +417,8 @@ pub fn set_import_pragmas(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "PRAGMA journal_mode = WAL;
          PRAGMA synchronous = OFF;
-         PRAGMA temp_store = MEMORY;",
+         PRAGMA cache_size = -65536;
+         PRAGMA temp_store = DEFAULT;",
     )
 }
 
@@ -422,7 +427,12 @@ pub fn set_import_pragmas(conn: &Connection) -> rusqlite::Result<()> {
 /// is self-contained and safe to `rename()` into place — a lingering `-wal` file would otherwise
 /// silently ride along (or not) depending on exactly when the rename happens.
 pub fn restore_normal_pragmas(conn: &Connection) -> rusqlite::Result<()> {
-    conn.execute_batch("PRAGMA synchronous = NORMAL; PRAGMA journal_mode = DELETE;")
+    conn.execute_batch(
+        "PRAGMA synchronous = NORMAL;
+         PRAGMA journal_mode = DELETE;
+         PRAGMA cache_size = -65536;
+         PRAGMA shrink_memory;",
+    )
 }
 
 /// Creates `rows`, `_meta`, `_import_info`, and the external-content `rows_fts` FTS5 table.

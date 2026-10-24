@@ -8474,7 +8474,7 @@
           analystName: "Forensic Examiner"
         });
 
-        alert(`Forensic Reporting Workbook Exported Successfully!\n\nExcel: ${res.xlsxPath}\nTimeline CSV: ${res.csvTimelinePath}\nRecords Exported: ${res.totalExported}\n\nSheets included: MASTER TIMELINE, IOC, INVENTORY, SUSPICIOUS ACCOUNTS.`);
+        alert(`Forensic Reporting Workbook Exported Successfully!\n\nExcel: ${res.xlsxPath}\nTimeline CSV: ${res.csvTimelinePath}\nRecords Exported: ${res.totalExported}\n\nSheets included: MASTER TIMELINE, IOC, INVENTORY, SUSPICIOUS ACCOUNTS, List.`);
       } catch (err) {
         alert(`Export failed: ${err}`);
       } finally {

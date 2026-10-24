@@ -376,7 +376,7 @@ fn test_large_scale_jsonl_and_compressed_gz_stress() {
     assert!(!summary.status_codes.is_empty());
     assert!(!summary.hourly_distribution.is_empty());
 
-    // 8. Export to 4-Sheet Excel Workbook & Verify via Calamine
+    // 8. Export to 5-Sheet Excel Workbook & Verify via Calamine (Master Timeline Alignment)
     let workbook_path = temp_dir.join("Stress_Forensic_Report.xlsx");
     let export_res = export_forensic_workbook(&conn, &workbook_path, "Forensic Examiner")
         .expect("workbook export succeeds");
@@ -388,17 +388,30 @@ fn test_large_scale_jsonl_and_compressed_gz_stress() {
     assert!(sheet_names.contains(&"IOC".to_string()));
     assert!(sheet_names.contains(&"INVENTORY".to_string()));
     assert!(sheet_names.contains(&"SUSPICIOUS ACCOUNTS".to_string()));
+    assert!(sheet_names.contains(&"List".to_string()));
 
     let master_range = xl.worksheet_range("MASTER TIMELINE").expect("read MASTER TIMELINE");
     assert!(master_range.height() > 1, "Must have header and data rows");
     assert_eq!(master_range.get((0, 0)).unwrap().to_string(), "Input Date");
     assert_eq!(master_range.get((0, 1)).unwrap().to_string(), "Analyst");
     assert_eq!(master_range.get((0, 2)).unwrap().to_string(), "Date/Time (UTC)");
+    assert_eq!(master_range.get((0, 4)).unwrap().to_string(), "Event Type & MITRE ATT&CK ID");
 
     let ioc_range = xl.worksheet_range("IOC").expect("read IOC sheet");
     assert!(ioc_range.height() > 1);
     assert_eq!(ioc_range.get((0, 0)).unwrap().to_string(), "Type");
     assert_eq!(ioc_range.get((0, 1)).unwrap().to_string(), "Indicator");
+
+    let inv_range = xl.worksheet_range("INVENTORY").expect("read INVENTORY sheet");
+    assert!(inv_range.height() >= 1);
+    assert_eq!(inv_range.get((0, 0)).unwrap().to_string(), "Evidence Type");
+
+    let acc_range = xl.worksheet_range("SUSPICIOUS ACCOUNTS").expect("read SUSPICIOUS ACCOUNTS sheet");
+    assert!(acc_range.height() >= 1);
+    assert_eq!(acc_range.get((0, 0)).unwrap().to_string(), "Account Name");
+
+    let list_range = xl.worksheet_range("List").expect("read List sheet");
+    assert!(list_range.height() >= 100, "List must contain master MITRE reference rows");
 
     // Clean up
     let _ = std::fs::remove_dir_all(&temp_dir);
