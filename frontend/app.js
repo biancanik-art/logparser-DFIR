@@ -196,7 +196,7 @@
   // Tabulator setup below). Normal files here run ~50-300 columns; this exists for outliers
   // (a real 1,824-column export made "fitDataFill" + non-virtualized rendering measure every
   // cell of every column synchronously and stall the whole app).
-  const WIDE_GRID_COLUMN_THRESHOLD = 400;
+  const WIDE_GRID_COLUMN_THRESHOLD = 15;
 
   let columns = []; // ColumnMeta[] from ImportSummary
   let table = null;
@@ -1738,6 +1738,7 @@
           resizable: true,
           headerSort: true,
           minWidth: 140,
+          width: 180,
           visible: !hiddenColFields.has(colName),
           headerClick(e, col) {
             if (e && (e.ctrlKey || e.metaKey)) {
@@ -1844,29 +1845,26 @@
     }
 
     if (table) {
-      if (table.options) table.options.nestedFieldSeparator = false;
-      table.setColumns(unifiedColumns);
-      table.replaceData(tableData).then(() => {
-        if (resolvedIndex) {
-          scrollToUnifiedIndex(resolvedIndex);
-        }
-      });
-    } else {
-      table = new Tabulator("#grid", {
-        data: tableData,
-        index: "_unifiedIndex",
-        columns: unifiedColumns,
-        layout: "fitDataFill",
-        height: "100%",
-        placeholder: "No matching rows",
-        nestedFieldSeparator: false,
-      });
-      table.on("tableBuilt", () => {
-        if (resolvedIndex) {
-          scrollToUnifiedIndex(resolvedIndex);
-        }
-      });
+      table.destroy();
+      table = null;
     }
+
+    table = new Tabulator("#grid", {
+      data: tableData,
+      index: "_unifiedIndex",
+      columns: unifiedColumns,
+      layout: "fitDataFill",
+      renderHorizontal: "virtual",
+      renderVertical: "virtual",
+      height: "100%",
+      placeholder: "No matching rows",
+      nestedFieldSeparator: false,
+    });
+    table.on("tableBuilt", () => {
+      if (resolvedIndex) {
+        scrollToUnifiedIndex(resolvedIndex);
+      }
+    });
 
     table.on("rowDblClick", (e, row) => {
       openUnifiedRowDetailDrawer(row.getData());
@@ -1942,8 +1940,8 @@
       }
     } catch (_) {}
 
-    if (table && columns.length > 0) {
-      await table.setColumns(buildTabulatorColumns());
+    if (columns.length > 0) {
+      recreateSingleFileTable();
       await refreshData();
       refreshCount();
     }
@@ -1984,8 +1982,8 @@
 
     if (targetIdx !== -1 && targetIdx !== activeFileIndex) {
       await switchLoadedFile(targetIdx);
-    } else if (table && columns.length > 0) {
-      await table.setColumns(buildTabulatorColumns());
+    } else if (columns.length > 0) {
+      recreateSingleFileTable();
       await refreshData();
       refreshCount();
     }
@@ -5699,6 +5697,38 @@
     }
   }
 
+  function recreateSingleFileTable() {
+    if (table) {
+      table.destroy();
+      table = null;
+    }
+    const isWideGrid = columns.length > WIDE_GRID_COLUMN_THRESHOLD;
+    const tabulatorColumns = buildTabulatorColumns();
+    table = new Tabulator("#grid", {
+      data: [],
+      columns: tabulatorColumns,
+      index: "row_num",
+      selectableRows: true,
+      selectableRowsRangeMode: "click",
+      selectableRowsPersistence: true,
+      layout: isWideGrid ? "fitColumns" : "fitDataFill",
+      renderHorizontal: isWideGrid ? "virtual" : "basic",
+      renderVertical: "virtual",
+      height: "100%",
+      placeholder: "No matching rows",
+    });
+
+    if (typeof table.on === "function") {
+      table.on("rowSelectionChanged", () => {
+        updateSelectionBadge();
+      });
+      table.on("renderComplete", () => {
+        updateColumnHeaderSelectionStyles();
+      });
+    }
+    return table;
+  }
+
   function buildTabulatorColumns() {
     const isWideGrid = columns.length > WIDE_GRID_COLUMN_THRESHOLD;
 
@@ -5892,39 +5922,7 @@
     if (pageSizeSelect) pageSizeSelect.value = String(pageSize);
     resetPagination();
 
-    const isWideGrid = columns.length > WIDE_GRID_COLUMN_THRESHOLD;
-    const tabulatorColumns = buildTabulatorColumns();
-
-    if (table) {
-      table.destroy();
-    }
-    table = new Tabulator("#grid", {
-      data: [],
-      columns: tabulatorColumns,
-      index: "row_num",
-      selectableRows: true,
-      selectableRowsRangeMode: "click",
-      selectableRowsPersistence: true,
-      // "fitDataFill" measures every rendered cell of every column to size columns to content
-      // (Tabulator's reinitializeWidth()/fitToData()) - on a very wide file that's real,
-      // synchronous, per-cell DOM measurement work repeated on every page turn. "fitColumns"
-      // instead sizes columns from fixed width/grow/shrink config with no content measurement,
-      // and "virtual" horizontal rendering avoids building DOM cells for off-screen columns.
-      // Below the threshold this is unchanged from before (fitDataFill + basic rendering).
-      layout: isWideGrid ? "fitColumns" : "fitDataFill",
-      renderHorizontal: isWideGrid ? "virtual" : "basic",
-      height: "100%",
-      placeholder: "No matching rows",
-    });
-
-    if (typeof table.on === "function") {
-      table.on("rowSelectionChanged", () => {
-        updateSelectionBadge();
-      });
-      table.on("renderComplete", () => {
-        updateColumnHeaderSelectionStyles();
-      });
-    }
+    recreateSingleFileTable();
 
     setControlsEnabled(true);
     // Semantic preparation is independent of optional mapping. Start both immediately so a

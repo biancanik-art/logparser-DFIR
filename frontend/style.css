@@ -618,6 +618,7 @@ select { font: inherit; }
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  background-color: var(--panel-bg);
 }
 
 #grid {
@@ -626,6 +627,9 @@ select { font: inherit; }
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
+  background-color: var(--panel-bg);
+  position: relative;
+  contain: content;
 }
 
 #status-bar {
@@ -703,10 +707,12 @@ select { font: inherit; }
 }
 
 .tabulator {
-  background: var(--panel-bg);
+  background: var(--panel-bg) !important;
   color: var(--text);
   border: none;
   font-size: 12px;
+  position: relative;
+  contain: content;
 }
 
 .tabulator .tabulator-header .tabulator-col {
@@ -738,9 +744,16 @@ select { font: inherit; }
   color: var(--accent) !important;
 }
 
-.tabulator .tabulator-tableholder .tabulator-table {
-  background-color: var(--panel-bg);
+.tabulator .tabulator-tableholder {
+  background-color: var(--panel-bg) !important;
   color: var(--text);
+  overflow-anchor: none;
+}
+
+.tabulator .tabulator-tableholder .tabulator-table {
+  background-color: var(--panel-bg) !important;
+  color: var(--text);
+  min-height: 100%;
 }
 
 .tabulator-row {
