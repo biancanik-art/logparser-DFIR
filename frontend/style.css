@@ -3534,3 +3534,225 @@ select { font: inherit; }
 
 
 
+
+
+/* ==========================================================================
+   Targeted Hunt & Forensic Master Timeline Workbench Styles
+   ========================================================================== */
+
+.hunting-workbench-grid {
+  display: grid;
+  grid-template-columns: 1fr 1.4fr;
+  gap: 16px;
+  margin-bottom: 14px;
+}
+
+@media (max-width: 900px) {
+  .hunting-workbench-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+.hunting-time-box,
+.hunting-ioc-box {
+  background: var(--panel-subtle);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.hunting-box-title {
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text);
+  margin-bottom: 10px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.hunting-time-inputs {
+  display: flex;
+  gap: 10px;
+}
+
+.hunting-span-note {
+  font-size: 11px;
+  color: var(--text-muted);
+  margin-top: 10px;
+  font-family: ui-monospace, Consolas, monospace;
+}
+
+.hunting-ioc-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, Consolas, monospace;
+  font-size: 12px;
+  padding: 8px 10px;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  resize: vertical;
+  min-height: 90px;
+}
+
+.hunting-ioc-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 8px;
+  flex-wrap: wrap;
+}
+
+.hunting-launch-bar {
+  margin-top: 6px;
+  margin-bottom: 12px;
+}
+
+.btn-large-hunt {
+  width: 100%;
+  padding: 10px 16px !important;
+  font-size: 14px !important;
+  font-weight: 600 !important;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+  cursor: pointer;
+}
+
+/* ==========================================================================
+   Gemini AI Incident Narrative & Analysis Styles
+   ========================================================================== */
+
+.gemini-narrative-card {
+  margin-top: 14px;
+  background: var(--panel-bg);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.gemini-narrative-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 10px 16px;
+  background: var(--panel-subtle);
+  border-bottom: 1px solid var(--border);
+}
+
+.gemini-title-group {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.gemini-badge {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  background: #6366f1;
+  color: #ffffff;
+}
+
+.gemini-subtitle {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+
+.gemini-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.gemini-narrative-body {
+  padding: 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  max-height: 480px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  font-family: inherit;
+}
+
+.gemini-narrative-body h3,
+.gemini-narrative-body h4 {
+  margin-top: 14px;
+  margin-bottom: 6px;
+  color: var(--text);
+}
+
+.gemini-narrative-body code {
+  font-family: ui-monospace, Consolas, monospace;
+  background: var(--panel-subtle);
+  padding: 2px 5px;
+  border-radius: 3px;
+  font-size: 12px;
+  border: 1px solid var(--border);
+}
+
+/* Drawer AI Panel */
+.unified-drawer-ai-panel {
+  margin: 12px 14px;
+  padding: 12px;
+  border-radius: 6px;
+  background: var(--panel-subtle);
+  border: 1px solid #6366f1;
+  font-size: 12px;
+}
+
+.drawer-ai-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  color: #6366f1;
+  margin-bottom: 8px;
+}
+
+.drawer-ai-content {
+  line-height: 1.5;
+  white-space: pre-wrap;
+  font-family: inherit;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.btn-gemini-action {
+  border-color: #6366f1 !important;
+  color: #6366f1 !important;
+}
+
+.btn-gemini-action:hover {
+  background: rgba(99, 102, 241, 0.1) !important;
+}
+
+/* Cross IOC Inspect Button */
+.cross-ioc-inspect-btn {
+  margin-left: 8px;
+  padding: 2px 8px !important;
+  font-size: 11px !important;
+  font-weight: 500;
+  background: var(--panel-bg);
+  border: 1px solid var(--border) !important;
+  color: var(--text) !important;
+  cursor: pointer;
+  border-radius: 4px;
+  transition: all 0.15s ease;
+}
+
+.cross-ioc-inspect-btn:hover {
+  background: var(--accent) !important;
+  color: #ffffff !important;
+  border-color: var(--accent) !important;
+}

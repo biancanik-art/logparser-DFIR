@@ -1,4 +1,4 @@
-(() => {
+﻿(() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
@@ -236,9 +236,10 @@
 
   // Cross-file correlation state
   let crossIocSummary = null;
-  let crossIocActiveFilter = "overlap"; // "overlap" or "all"
+  let crossIocActiveFilter = "all"; // "overlap" or "all"
   let crossIocActiveType = "all"; // "all", "ip", "domain", "url", "email", "user_agent"
   let crossSearchResultsData = null;
+  let latestMasterTimelineEvents = [];
 
   // Unified Correlated Grid state
   let isUnifiedCorrelatedMode = false;
@@ -2052,6 +2053,19 @@
     unifiedDetailDrawer.classList.remove("hidden");
     if (unifiedDrawerBackdrop) unifiedDrawerBackdrop.classList.remove("hidden");
 
+    const drawerAiBtn = document.getElementById("unified-drawer-ai-btn");
+    const drawerAiPanel = document.getElementById("unified-drawer-ai-panel");
+    if (drawerAiPanel) drawerAiPanel.classList.add("hidden");
+    if (drawerAiBtn) {
+      drawerAiBtn.onclick = () => deobfuscateActiveRowDetail();
+    }
+    const drawerAiCloseBtn = document.getElementById("drawer-ai-close-btn");
+    if (drawerAiCloseBtn) {
+      drawerAiCloseBtn.onclick = () => {
+        if (drawerAiPanel) drawerAiPanel.classList.add("hidden");
+      };
+    }
+
     try {
       const targetFile = (loadedFiles || []).find(
         (f) => f.path === rowData.path || f.name === rowData.fileName || (rowData.path && rowData.path.endsWith(f.name))
@@ -2140,6 +2154,8 @@
   function closeUnifiedRowDetailDrawer() {
     if (unifiedDetailDrawer) unifiedDetailDrawer.classList.add("hidden");
     if (unifiedDrawerBackdrop) unifiedDrawerBackdrop.classList.add("hidden");
+    const drawerAiPanel = document.getElementById("unified-drawer-ai-panel");
+    if (drawerAiPanel) drawerAiPanel.classList.add("hidden");
     activeDrawerRowData = null;
     activeDrawerRawDetails = null;
   }
@@ -6365,17 +6381,26 @@
   async function runCrossBatchSearch() {
     if (!crossBatchInput) return;
     const indicators = parseBatchIndicatorsFromText(crossBatchInput.value);
-    if (indicators.length === 0) {
-      alert("Please paste or import at least one indicator (IP, hash, domain, or keyword).");
+
+    const fromInput = document.getElementById("hunting-time-from");
+    const toInput = document.getElementById("hunting-time-to");
+    const fromVal = fromInput ? fromInput.value.trim() : "";
+    const toVal = toInput ? toInput.value.trim() : "";
+    const fromEpoch = fromVal ? parseUserDateTimeToEpoch(fromVal) : null;
+    const toEpoch = toVal ? parseUserDateTimeToEpoch(toVal) : null;
+
+    if (indicators.length === 0 && !fromEpoch && !toEpoch) {
+      alert("Please paste at least one indicator (IP, hash, domain, or keyword) to hunt for, or specify an incident time window.");
       return;
     }
     if (loadedFiles.length === 0) {
-      crossSearchStatus.textContent = "No log files loaded to search. Use 'Open File' to load logs first.";
+      crossSearchStatus.textContent = "No log files loaded to search. Use 'Open File' or 'Open Folder' to load logs first.";
       crossSearchStatus.classList.remove("hidden");
       return;
     }
 
-    crossSearchStatus.textContent = `Searching ${indicators.length} indicators across ${loadedFiles.length} files...`;
+    const timeDesc = (fromVal || toVal) ? ` within [${fromVal || "Start"} → ${toVal || "End"}]` : "";
+    crossSearchStatus.textContent = `Hunting ${indicators.length} indicators across ${loadedFiles.length} files${timeDesc}...`;
     crossSearchStatus.classList.remove("hidden");
     crossSearchResults.innerHTML = "";
     crossSearchClearBtn?.classList.remove("hidden");
@@ -6387,12 +6412,14 @@
         cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
       }));
 
-      // Also register into backend universal_ioc so forensic export contains them
+      // Register into backend universal_ioc so forensic export contains them
       try {
-        await invoke("add_universal_iocs", {
-          rawContent: indicators.join("\n"),
-          description: "Batch Multi-Log Search",
-        });
+        if (indicators.length > 0) {
+          await invoke("add_universal_iocs", {
+            rawContent: indicators.join("\n"),
+            description: "Targeted Multi-Log Hunt",
+          });
+        }
       } catch (_) {}
 
       const results = await invoke("cross_search_batch_files", {
@@ -6401,17 +6428,57 @@
       });
 
       latestBatchResults = results || [];
-      if (crossBatchExportBtn) {
-        crossBatchExportBtn.disabled = (latestBatchResults.length === 0);
-      }
-      if (correlationForensicExportBtn) {
-        correlationForensicExportBtn.disabled = (loadedFiles.length === 0);
+      const matchedItems = latestBatchResults.filter((r) => r.totalMatches > 0);
+      const matchedInds = matchedItems.map((m) => m.indicator);
+
+      // Fetch unified events across files
+      let timelineEvents = [];
+      if (matchedInds.length > 0) {
+        showProgress("Correlating chronological timeline across files...", 0.6);
+        timelineEvents = await invoke("get_unified_batch_events", {
+          files: filesPayload,
+          indicators: matchedInds,
+        });
+        hideProgress();
       }
 
-      renderBatchSearchResults(latestBatchResults, indicators.length);
+      // Filter timeline events by requested date/time window
+      if (fromEpoch !== null || toEpoch !== null) {
+        timelineEvents = timelineEvents.filter((ev) => {
+          let ep = ev.epochMs ?? ev.epoch_ms;
+          if (!ep && (ev.utcText || ev.timestamp || ev.norm_time)) {
+            ep = parseUserDateTimeToEpoch(ev.utcText || ev.timestamp || ev.norm_time);
+          }
+          if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
+            if (fromEpoch !== null && ep < fromEpoch) return false;
+            if (toEpoch !== null && ep > toEpoch) return false;
+          }
+          return true;
+        });
+      }
+
+      latestMasterTimelineEvents = timelineEvents;
+
+      // Update dedicated hunting action bar
+      const huntingBar = document.getElementById("hunting-actions-bar");
+      const huntingTitle = document.getElementById("hunting-findings-title");
+      if (huntingBar && huntingTitle) {
+        huntingBar.classList.remove("hidden");
+        huntingTitle.textContent = `🎯 Master Timeline: ${timelineEvents.length.toLocaleString()} events matching ${matchedInds.length} indicators${timeDesc}`;
+      }
+
+      if (crossBatchExportBtn) {
+        crossBatchExportBtn.disabled = (timelineEvents.length === 0);
+      }
+      if (correlationForensicExportBtn) {
+        correlationForensicExportBtn.disabled = (timelineEvents.length === 0);
+      }
+
+      renderBatchSearchResults(latestBatchResults, indicators.length, timelineEvents, matchedInds);
     } catch (err) {
+      hideProgress();
       console.error("cross_search_batch_files error", err);
-      crossSearchStatus.textContent = `Batch search failed: ${err}`;
+      crossSearchStatus.textContent = `Batch hunt failed: ${err}`;
     }
   }
 
@@ -6698,7 +6765,7 @@
           <span class="cross-ioc-val clickable" title="Click to view all correlated events in Unified Evidence Grid">${escapeHtml(item.value)}</span>
           ${metaTagsHtml}
           ${item.fileCount >= 2 ? `<span class="correlation-count-badge">Found in ${item.fileCount} files (${item.totalCount} total hits)</span>` : ""}
-          ${item.fileCount >= 2 ? `<button type="button" class="cross-ioc-unified-btn" title="View all ${item.totalCount} hits across ${item.fileCount} files in Unified Grid">🌐 View All ${item.totalCount} in Grid</button>` : ""}
+                    <button type="button" class="cross-ioc-inspect-btn" title="Inspect ${escapeHtml(item.value)} in Evidence Grid">🔍 Inspect in Grid (${item.totalCount})</button>
         </div>
         <div class="cross-ioc-files-breakdown">
           ${fileChipsHtml}
@@ -6720,6 +6787,7 @@
           hideProgress();
           if (evts && evts.length > 0) {
             renderUnifiedCorrelatedGrid(evts, `${typeLabel}: ${item.value}`);
+            switchTab("tab-grid");
           } else {
             alert(`No matching events found across files for ${item.value}`);
           }
@@ -6733,6 +6801,29 @@
       const unifiedBtn = card.querySelector(".cross-ioc-unified-btn");
       if (unifiedBtn) {
         unifiedBtn.addEventListener("click", openUnified);
+      }
+
+      const inspectBtn = card.querySelector(".cross-ioc-inspect-btn");
+      if (inspectBtn) {
+        inspectBtn.addEventListener("click", async (e) => {
+          e.stopPropagation();
+          if (item.fileCount >= 2) {
+            await openUnified();
+          } else {
+            const occ = item.occurrences[0];
+            const fIdx = loadedFiles.findIndex((f) => f.path === occ?.path);
+            if (fIdx !== -1) {
+              if (fIdx !== activeFileIndex) {
+                await switchLoadedFile(fIdx);
+              }
+              switchTab("tab-grid");
+              if (searchBox) {
+                searchBox.value = item.value;
+                searchBox.dispatchEvent(new Event("input"));
+              }
+            }
+          }
+        });
       }
 
       const valEl = card.querySelector(".cross-ioc-val");
@@ -7256,11 +7347,14 @@
       }, 30);
     }
 
-    if (tabId === "tab-correlation") {
-      renderCorrelationScope();
-      if (!crossIocSummary && loadedFiles.length > 1) {
+    if (tabId === "tab-iocs") {
+      if (!crossIocSummary && loadedFiles.length > 0) {
         runCrossIocScan();
       }
+    }
+    if (tabId === "tab-correlation") {
+      renderCorrelationScope();
+      updateHuntingTimeSpanText();
     }
 
     if (tabId === "tab-enrichment") {
@@ -9359,3 +9453,329 @@
 
 
 })();
+
+
+  // =========================================================================
+  // Gemini AI Client & Forensic Analysis Integration
+  // =========================================================================
+
+  async function callGeminiApi(prompt, systemInstruction = "") {
+    const apiKey = localStorage.getItem("logparser_gemini_api_key");
+    if (!apiKey) {
+      throw new Error("No Gemini API Key configured. Please click ⚙ Settings in the top toolbar to enter your free API key.");
+    }
+    const model = localStorage.getItem("logparser_gemini_model") || "gemini-2.5-flash";
+    const url = https://generativelanguage.googleapis.com/v1beta/models/ + encodeURIComponent(model) + :generateContent?key= + encodeURIComponent(apiKey);
+
+    const body = {
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+    };
+    if (systemInstruction) {
+      body.systemInstruction = { parts: [{ text: systemInstruction }] };
+    }
+
+    const resp = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (!resp.ok) {
+      const errJson = await resp.json().catch(() => null);
+      const errMsg = errJson?.error?.message || HTTP  + resp.status +   + resp.statusText;
+      throw new Error(Gemini API Error:  + errMsg);
+    }
+
+    const data = await resp.json();
+    const candidate = data.candidates && data.candidates[0];
+    const text = candidate?.content?.parts?.map((p) => p.text).join("") || "";
+    return text;
+  }
+
+  async function generateIncidentNarrativeWithGemini(events, indicators) {
+    if (!events || events.length === 0) {
+      alert("No master timeline events found to analyze. Please execute a hunt first.");
+      return;
+    }
+    const card = document.getElementById("gemini-narrative-card");
+    const body = document.getElementById("gemini-narrative-body");
+    const subtitle = document.getElementById("gemini-narrative-subtitle");
+    if (!card || !body) return;
+
+    card.classList.remove("hidden");
+    body.innerHTML = <div style="display:flex; align-items:center; gap:8px; color:var(--text-muted);"><span class="loading-spinner"></span> Synthesizing forensic master timeline with Gemini...</div>;
+
+    const sample = events.slice(0, 80).map((e, idx) => ({
+      index: idx + 1,
+      time: e.utcText || e.timestamp || e.norm_time,
+      file: e.fileName,
+      user: e.user,
+      host: e.host,
+      action: e.action,
+      details: e.details,
+      tags: e.mitreTags,
+    }));
+
+    const prompt = You are a Lead Digital Forensics & Incident Response (DFIR) Investigator.
+The examiner hunted for the following targeted indicators across multiple evidence files:
+Indicators:  + indicators.join(", ") + 
+
+Correlated Master Evidence Timeline (chronological order):
+ + JSON.stringify(sample, null, 2) + 
+
+Produce a rigorous, structured Forensic Incident Narrative containing:
+1. ### 📋 Executive Summary
+A concise, high-level briefing (3-4 sentences) on the scope, primary identities/hosts affected, and overall intrusion impact.
+
+2. ### ⏱ Chronological Attack Reconstruction
+Walk through the sequence of events across time:
+- Initial Access & First Observed Activity
+- Execution / Persistence / Privilege Escalation
+- Lateral Movement / Internal Discovery
+- Impact / Data Access / Exfiltration (if observed)
+
+3. ### 🎯 Identified Threats & Compromised Entities
+Bullet list of observed attacker IPs, suspicious accounts, C2 domains, and malware/tools.
+
+4. ### 🛡 MITRE ATT&CK Mapping
+Table or list mapping observed events to MITRE ATT&CK Tactics & Techniques.
+
+Ensure findings are strictly grounded in the log evidence. Do not hallucinate external details.;
+
+    try {
+      const narrative = await callGeminiApi(prompt, "You are an elite DFIR technical investigator producing court-ready and executive-ready forensic reports.");
+      body.textContent = narrative;
+      if (subtitle) {
+        subtitle.textContent = Analyzed  + sample.length +  timeline events across evidence files;
+      }
+    } catch (err) {
+      body.innerHTML = <div style="color:var(--danger, #ef4444); padding:10px; background:rgba(239,68,68,0.1); border-radius:4px;">
+        <strong>Gemini Analysis Error:</strong>  + escapeHtml(err.message) + 
+        <div style="margin-top:6px; font-size:11px; color:var(--text-muted);">
+          Please configure your Gemini API key in <strong>⚙ Settings</strong> in the top toolbar.
+        </div>
+      </div>;
+    }
+  }
+
+  async function deobfuscateActiveRowDetail() {
+    if (!activeDrawerRowData) return;
+    const panel = document.getElementById("unified-drawer-ai-panel");
+    const content = document.getElementById("drawer-ai-content");
+    if (!panel || !content) return;
+
+    panel.classList.remove("hidden");
+    content.innerHTML = <div style="display:flex; align-items:center; gap:8px; color:var(--text-muted);"><span class="loading-spinner"></span> Analyzing command line & deobfuscating with Gemini...</div>;
+
+    const payload = {
+      file: activeDrawerRowData.fileName,
+      action: activeDrawerRowData.action,
+      details: activeDrawerRowData.details,
+      rawFields: activeDrawerRawDetails,
+    };
+
+    const prompt = You are a Senior DFIR Malware and Script Analyst.
+Analyze the following process execution or log record payload:
+ + JSON.stringify(payload, null, 2) + 
+
+Tasks:
+1. Deobfuscation: If there are Base64 strings, encoded PowerShell commands (-enc, -encodedCommand), hex strings, environment variable concatenation, or download cradles, decode and expand them into clean, human-readable code.
+2. Attacker Intent & Analysis: Explain in 2-3 sentences what this script/command is doing and why it is suspicious.
+3. Extracted Hidden IOCs: List any discovered IPs, URLs, domains, registry keys, dropped file paths, or child processes in clean bullet points so the investigator can hunt for them.
+4. MITRE ATT&CK: Technique ID and name.
+
+If the command is benign or standard administrative activity, state that clearly.;
+
+    try {
+      const result = await callGeminiApi(prompt, "You are an expert DFIR analyst specializing in reverse-engineering command lines, PowerShell obfuscation, and living-off-the-land binaries (LOLBins).");
+      content.textContent = result;
+    } catch (err) {
+      content.innerHTML = <div style="color:var(--danger, #ef4444); padding:8px; background:rgba(239,68,68,0.1); border-radius:4px;">
+        <strong>Deobfuscation Error:</strong>  + escapeHtml(err.message) + 
+        <div style="margin-top:4px; font-size:11px; color:var(--text-muted);">Configure your API key in <strong>⚙ Settings</strong>.</div>
+      </div>;
+    }
+  }
+
+  function initSettingsModal() {
+    const settingsBtn = document.getElementById("settings-btn");
+    const settingsModal = document.getElementById("settings-modal");
+    const closeBtn = document.getElementById("settings-modal-close-btn");
+    const backdrop = document.getElementById("settings-modal-backdrop");
+    const keyInput = document.getElementById("gemini-api-key-input");
+    const toggleKeyBtn = document.getElementById("gemini-toggle-key-visibility");
+    const modelSelect = document.getElementById("gemini-model-select");
+    const saveBtn = document.getElementById("settings-save-btn");
+    const statusDot = document.getElementById("gemini-status-dot");
+    const statusText = document.getElementById("gemini-status-text");
+
+    function updateStatus() {
+      const key = localStorage.getItem("logparser_gemini_api_key") || "";
+      if (key) {
+        if (statusDot) statusDot.style.background = "#22c55e";
+        if (statusText) statusText.textContent = "Connected: Gemini AI is active for deobfuscation and narratives";
+      } else {
+        if (statusDot) statusDot.style.background = "#9ca3af";
+        if (statusText) statusText.textContent = "Offline Forensic Mode (No API key configured — 0 network calls)";
+      }
+    }
+
+    function openModal() {
+      if (!settingsModal) return;
+      if (keyInput) keyInput.value = localStorage.getItem("logparser_gemini_api_key") || "";
+      if (modelSelect) modelSelect.value = localStorage.getItem("logparser_gemini_model") || "gemini-2.5-flash";
+      updateStatus();
+      settingsModal.classList.remove("hidden");
+      if (backdrop) backdrop.classList.remove("hidden");
+    }
+
+    function closeModal() {
+      if (!settingsModal) return;
+      settingsModal.classList.add("hidden");
+      if (backdrop) backdrop.classList.add("hidden");
+    }
+
+    if (settingsBtn) settingsBtn.addEventListener("click", openModal);
+    if (closeBtn) closeBtn.addEventListener("click", closeModal);
+    if (backdrop) backdrop.addEventListener("click", closeModal);
+
+    if (toggleKeyBtn && keyInput) {
+      toggleKeyBtn.addEventListener("click", () => {
+        keyInput.type = keyInput.type === "password" ? "text" : "password";
+      });
+    }
+
+    if (saveBtn) {
+      saveBtn.addEventListener("click", () => {
+        if (keyInput) localStorage.setItem("logparser_gemini_api_key", keyInput.value.trim());
+        if (modelSelect) localStorage.setItem("logparser_gemini_model", modelSelect.value);
+        updateStatus();
+        closeModal();
+      });
+    }
+
+    updateStatus();
+  }
+
+  function updateHuntingTimeSpanText() {
+    const spanText = document.getElementById("hunting-time-span-text");
+    if (!spanText) return;
+    const bounds = getEvidenceTimeBounds();
+    if (bounds && bounds.min && bounds.max) {
+      spanText.textContent = formatEpochToUtcText(bounds.min) +  to  + formatEpochToUtcText(bounds.max) +  UTC;
+    } else {
+      spanText.textContent = loadedFiles.length > 0 ? "Loading timestamps..." : "No evidence loaded";
+    }
+  }
+
+  function getEvidenceTimeBounds() {
+    let minEpoch = null;
+    let maxEpoch = null;
+    if (Array.isArray(unifiedCorrelatedRows) && unifiedCorrelatedRows.length > 0) {
+      unifiedCorrelatedRows.forEach((r) => {
+        let ep = r.epochMs ?? r.epoch_ms;
+        if (!ep && (r.utcText || r.timestamp || r.norm_time)) {
+          ep = parseUserDateTimeToEpoch(r.utcText || r.timestamp || r.norm_time);
+        }
+        if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
+          if (minEpoch === null || ep < minEpoch) minEpoch = ep;
+          if (maxEpoch === null || ep > maxEpoch) maxEpoch = ep;
+        }
+      });
+    }
+    return (minEpoch && maxEpoch) ? { min: minEpoch, max: maxEpoch } : null;
+  }
+
+  function initHuntingTimeInputs() {
+    const fromInput = document.getElementById("hunting-time-from");
+    const toInput = document.getElementById("hunting-time-to");
+    const presetFull = document.getElementById("hunting-preset-full");
+    const preset1h = document.getElementById("hunting-preset-1h");
+    const preset24h = document.getElementById("hunting-preset-24h");
+    const presetClear = document.getElementById("hunting-preset-clear");
+
+    if (presetClear) {
+      presetClear.addEventListener("click", () => {
+        if (fromInput) fromInput.value = "";
+        if (toInput) toInput.value = "";
+      });
+    }
+
+    if (presetFull) {
+      presetFull.addEventListener("click", () => {
+        const bounds = getEvidenceTimeBounds();
+        if (bounds && bounds.min && bounds.max) {
+          if (fromInput) fromInput.value = formatEpochToUtcText(bounds.min);
+          if (toInput) toInput.value = formatEpochToUtcText(bounds.max);
+        }
+      });
+    }
+
+    if (preset1h) {
+      preset1h.addEventListener("click", () => {
+        const bounds = getEvidenceTimeBounds();
+        if (bounds && bounds.max) {
+          if (fromInput) fromInput.value = formatEpochToUtcText(bounds.max - 3600 * 1000);
+          if (toInput) toInput.value = formatEpochToUtcText(bounds.max);
+        }
+      });
+    }
+
+    if (preset24h) {
+      preset24h.addEventListener("click", () => {
+        const bounds = getEvidenceTimeBounds();
+        if (bounds && bounds.max) {
+          if (fromInput) fromInput.value = formatEpochToUtcText(bounds.max - 86400 * 1000);
+          if (toInput) toInput.value = formatEpochToUtcText(bounds.max);
+        }
+      });
+    }
+  }
+
+
+  // Initialize Settings Modal & Targeted Hunting
+  try {
+    initSettingsModal();
+    initHuntingTimeInputs();
+
+    const copyNarrativeBtn = document.getElementById("gemini-copy-narrative-btn");
+    if (copyNarrativeBtn) {
+      copyNarrativeBtn.addEventListener("click", () => {
+        const body = document.getElementById("gemini-narrative-body");
+        if (body && body.textContent) {
+          navigator.clipboard.writeText(body.textContent).then(() => {
+            copyNarrativeBtn.textContent = "✓ Copied!";
+            setTimeout(() => { copyNarrativeBtn.textContent = "📋 Copy Narrative"; }, 2000);
+          });
+        }
+      });
+    }
+
+    const closeNarrativeBtn = document.getElementById("gemini-close-narrative-btn");
+    if (closeNarrativeBtn) {
+      closeNarrativeBtn.addEventListener("click", () => {
+        const card = document.getElementById("gemini-narrative-card");
+        if (card) card.classList.add("hidden");
+      });
+    }
+
+    const huntingViewTimelineBtn = document.getElementById("batch-view-all-unified-btn");
+    if (huntingViewTimelineBtn) {
+      huntingViewTimelineBtn.addEventListener("click", () => {
+        if (latestMasterTimelineEvents && latestMasterTimelineEvents.length > 0) {
+          renderUnifiedCorrelatedGrid(latestMasterTimelineEvents, "Forensic Master Timeline");
+          switchTab("tab-grid");
+        }
+      });
+    }
+
+    const huntingGeminiBtn = document.getElementById("gemini-generate-narrative-btn");
+    if (huntingGeminiBtn) {
+      huntingGeminiBtn.addEventListener("click", () => {
+        const indicators = parseBatchIndicatorsFromText(crossBatchInput ? crossBatchInput.value : "");
+        generateIncidentNarrativeWithGemini(latestMasterTimelineEvents, indicators);
+      });
+    }
+  } catch (initErr) {
+    console.error("Initialization error", initErr);
+  }
