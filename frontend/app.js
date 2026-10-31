@@ -1,4 +1,4 @@
-﻿(() => {
+(() => {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
@@ -413,10 +413,10 @@
     aiSearchAvailability.classList.toggle("ready", enabled);
     if (enabled) {
       updateEvidenceColumnsUi();
-      extractIocsBtn.disabled = iocExtractionInFlight;
+      if (extractIocsBtn) extractIocsBtn.disabled = iocExtractionInFlight;
     } else {
-      suspiciousScanBtn.disabled = true;
-      extractIocsBtn.disabled = true;
+      if (suspiciousScanBtn) suspiciousScanBtn.disabled = true;
+      if (extractIocsBtn) extractIocsBtn.disabled = true;
     }
     updateGuidedInteractionControls();
   }
@@ -435,9 +435,9 @@
     applyBtn.disabled = inFlight || !controlsEnabled;
     clearBtn.disabled = inFlight || !controlsEnabled;
     reviewRolesBtn.disabled = inFlight || !controlsEnabled;
-    suspiciousScanBtn.disabled = inFlight || !controlsEnabled;
-    extractIocsBtn.disabled = inFlight || !controlsEnabled || iocExtractionInFlight;
-    manageIgnoreRulesBtn.disabled = inFlight || !controlsEnabled;
+    if (suspiciousScanBtn) suspiciousScanBtn.disabled = inFlight || !controlsEnabled;
+    if (extractIocsBtn) extractIocsBtn.disabled = inFlight || !controlsEnabled || iocExtractionInFlight;
+    if (manageIgnoreRulesBtn) manageIgnoreRulesBtn.disabled = inFlight || !controlsEnabled;
     if (inFlight) {
       if (firstPageBtn) firstPageBtn.disabled = true;
       prevPageBtn.disabled = true;
@@ -968,26 +968,28 @@
 
   function updateEvidenceColumnsUi() {
     const evidenceColumns = inferredEvidenceColumns();
-    const hasLoadedTable = columns.length > 0;
+    const hasLoadedTable = columns.length > 0 || (loadedFiles && loadedFiles.length > 0);
     const isMultiFile = loadedFiles && loadedFiles.length > 1;
 
-    if (isMultiFile) {
-      suspiciousScanBtn.textContent = `⚡ Run Threat Enrichment (All ${loadedFiles.length} Files)`;
-      if (suspiciousScanActiveBtn) {
-        suspiciousScanActiveBtn.style.display = "inline-flex";
-        suspiciousScanActiveBtn.disabled = !hasLoadedTable || roleDetectionInFlight || intelScanInFlight;
+    if (suspiciousScanBtn) {
+      if (isMultiFile) {
+        suspiciousScanBtn.textContent = `⚡ Run Threat Enrichment (All ${loadedFiles.length} Files)`;
+        if (suspiciousScanActiveBtn) {
+          suspiciousScanActiveBtn.style.display = "inline-flex";
+          suspiciousScanActiveBtn.disabled = !(columns.length > 0) || roleDetectionInFlight || intelScanInFlight;
+        }
+      } else {
+        suspiciousScanBtn.textContent = "⚡ Run Threat Enrichment";
+        if (suspiciousScanActiveBtn) {
+          suspiciousScanActiveBtn.style.display = "none";
+        }
       }
-    } else {
-      suspiciousScanBtn.textContent = "Run Threat Enrichment";
-      if (suspiciousScanActiveBtn) {
-        suspiciousScanActiveBtn.style.display = "none";
-      }
-    }
 
-    suspiciousScanBtn.disabled =
-      !hasLoadedTable ||
-      roleDetectionInFlight ||
-      intelScanInFlight;
+      suspiciousScanBtn.disabled =
+        !hasLoadedTable ||
+        (roleDetectionInFlight && !isMultiFile) ||
+        intelScanInFlight;
+    }
     if (!hasLoadedTable) {
       evidenceColumnsLabel.textContent = "Automatic evidence mapping starts after import.";
     } else if (roleDetectionInFlight) {
@@ -1210,6 +1212,10 @@
       }
     }
 
+    if (isUnifiedCorrelatedMode) {
+      await exitUnifiedCorrelatedGrid();
+    }
+
     discardGuidedPlanForTableAction();
     queryMode = "normal";
     activeEvidenceQuery = null;
@@ -1355,19 +1361,9 @@
   function openTimeFilterPopover() {
     if (!timeFilterPopover) return;
 
-    let minEpoch = null;
-    let maxEpoch = null;
-
-    if (isUnifiedCorrelatedMode && Array.isArray(unifiedCorrelatedRows)) {
-      unifiedCorrelatedRows.forEach((ev) => {
-        let ep = ev.epochMs ?? ev.epoch_ms;
-        if (!ep && ev.utcText) ep = parseUserDateTimeToEpoch(ev.utcText);
-        if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
-          if (minEpoch === null || ep < minEpoch) minEpoch = ep;
-          if (maxEpoch === null || ep > maxEpoch) maxEpoch = ep;
-        }
-      });
-    }
+    const bounds = getEvidenceTimeBounds();
+    const minEpoch = bounds ? bounds.min : null;
+    const maxEpoch = bounds ? bounds.max : null;
 
     if (minEpoch && maxEpoch && timeFilterSpanText) {
       const minStr = formatEpochToUtcText(minEpoch);
@@ -2026,26 +2022,52 @@
 
   async function openUnifiedRowDetailDrawer(rowData) {
     if (!rowData || !unifiedDetailDrawer) return;
-    activeDrawerRowData = rowData;
+    const resolvedPath = rowData.path || currentPath || "";
+    const resolvedFileName =
+      rowData.fileName ||
+      (resolvedPath ? resolvedPath.split(/[\\/]/).pop() : "File");
+    activeDrawerRowData = {
+      ...rowData,
+      path: resolvedPath,
+      fileName: resolvedFileName,
+    };
     activeDrawerRawDetails = null;
 
     const rowNum = rowData.row_num || rowData.rowNum || 1;
-    const unifiedIdx = rowData._unifiedIndex || 1;
+    const unifiedIdx = rowData._unifiedIndex || rowNum;
 
     if (unifiedDrawerTitle) {
-      unifiedDrawerTitle.textContent = `${rowData.fileName || "File"} — Event #${unifiedIdx} (Row #${rowNum})`;
+      unifiedDrawerTitle.textContent = isUnifiedCorrelatedMode
+        ? `${resolvedFileName} — Event #${unifiedIdx} (Row #${rowNum})`
+        : `${resolvedFileName} — Row #${rowNum}`;
+    }
+    if (unifiedDrawerJumpBtn) {
+      unifiedDrawerJumpBtn.classList.toggle("hidden", !isUnifiedCorrelatedMode);
     }
     if (unifiedDrawerMeta) {
-      unifiedDrawerMeta.innerHTML = `
-        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">File:</span> <code>${escapeHtml(rowData.fileName || "")}</code></div>
-        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Native Row:</span> <strong>#${rowNum}</strong></div>
-        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Time:</span> ${escapeHtml(rowData.utcText || "")}</div>
-        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">User:</span> ${escapeHtml(rowData.user || "")}</div>
-        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Host:</span> ${escapeHtml(rowData.host || "")}</div>
-        <div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Action:</span> ${escapeHtml(rowData.action || "")}</div>
-        ${rowData.details && rowData.details !== "—" ? `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Details / Params:</span> <code>${escapeHtml(rowData.details)}</code></div>` : ""}
-        ${Array.isArray(rowData.mitreTags) && rowData.mitreTags.length > 0 ? `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Tags:</span> ${rowData.mitreTags.map((t) => `<span class="cross-ioc-meta-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3);margin-right:3px;">${escapeHtml(t)}</span>`).join("")}</div>` : ""}
-      `;
+      const metaItems = [
+        `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">File:</span> <code>${escapeHtml(resolvedFileName)}</code></div>`,
+        `<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Native Row:</span> <strong>#${rowNum}</strong></div>`,
+      ];
+      if (rowData.utcText) {
+        metaItems.push(`<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Time:</span> ${escapeHtml(rowData.utcText)}</div>`);
+      }
+      if (rowData.user) {
+        metaItems.push(`<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">User:</span> ${escapeHtml(rowData.user)}</div>`);
+      }
+      if (rowData.host) {
+        metaItems.push(`<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Host:</span> ${escapeHtml(rowData.host)}</div>`);
+      }
+      if (rowData.action) {
+        metaItems.push(`<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Action:</span> ${escapeHtml(rowData.action)}</div>`);
+      }
+      if (rowData.details && rowData.details !== "—") {
+        metaItems.push(`<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Details / Params:</span> <code>${escapeHtml(rowData.details)}</code></div>`);
+      }
+      if (Array.isArray(rowData.mitreTags) && rowData.mitreTags.length > 0) {
+        metaItems.push(`<div class="unified-drawer-meta-item"><span class="unified-drawer-meta-label">Tags:</span> ${rowData.mitreTags.map((t) => `<span class="cross-ioc-meta-tag" style="background:rgba(239,68,68,0.15);color:#ef4444;border-color:rgba(239,68,68,0.3);margin-right:3px;">${escapeHtml(t)}</span>`).join("")}</div>`);
+      }
+      unifiedDrawerMeta.innerHTML = metaItems.join("");
     }
 
     if (unifiedDrawerFilter) unifiedDrawerFilter.value = "";
@@ -2068,12 +2090,12 @@
 
     try {
       const targetFile = (loadedFiles || []).find(
-        (f) => f.path === rowData.path || f.name === rowData.fileName || (rowData.path && rowData.path.endsWith(f.name))
+        (f) => f.path === resolvedPath || f.name === resolvedFileName || (resolvedPath && resolvedPath.endsWith(f.name))
       );
       const raw = await invoke("get_row_raw_details", {
         target: {
-          path: rowData.path,
-          sheet: targetFile?.sheet || null,
+          path: resolvedPath,
+          sheet: targetFile?.sheet || currentSheet || null,
           cacheDbPath: targetFile?.cacheDbPath || targetFile?.summary?.cacheDbPath || null,
         },
         rowNum,
@@ -2392,11 +2414,14 @@
           chip.appendChild(tacticsBadge);
         }
         chip.title = isError ? fb.error : `Click to switch view to ${fb.fileName}`;
-        chip.addEventListener("click", () => {
+        chip.addEventListener("click", async () => {
           const targetIdx = (loadedFiles || []).findIndex(f => f.path === fb.path);
           if (targetIdx !== -1 && targetIdx !== activeFileIndex) {
-            switchLoadedFile(targetIdx);
+            await switchLoadedFile(targetIdx);
+          } else if (isUnifiedCorrelatedMode) {
+            await exitUnifiedCorrelatedGrid();
           }
+          switchTab("tab-grid");
         });
         fileChips.appendChild(chip);
       });
@@ -3690,15 +3715,34 @@
           : await invoke("query_rows", { spec: request.spec });
       if (!requestIsCurrent() || !table) return null;
       const rawRows = Array.isArray(page.rows) ? page.rows : [];
-      const visibleRows = hiddenRowNums.size > 0
+      let visibleRows = hiddenRowNums.size > 0
         ? rawRows.filter((r) => !hiddenRowNums.has(r.row_num))
         : rawRows;
+      if (
+        activeTimeFilter &&
+        (activeTimeFilter.fromEpoch !== null || activeTimeFilter.toEpoch !== null)
+      ) {
+        const tsCol = findFirstDateTimeColumn(columns, columnRoleSuggestions);
+        if (tsCol && tsCol.sqlName) {
+          visibleRows = visibleRows.filter((r) => {
+            const rawVal = r[tsCol.sqlName];
+            const ep = rawVal ? parseUserDateTimeToEpoch(String(rawVal)) : null;
+            if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
+              if (activeTimeFilter.fromEpoch !== null && ep < activeTimeFilter.fromEpoch) return false;
+              if (activeTimeFilter.toEpoch !== null && ep > activeTimeFilter.toEpoch) return false;
+              return true;
+            }
+            return false;
+          });
+        }
+      }
       await request.table.replaceData(visibleRows);
       if (!requestIsCurrent() || !table) return null;
       nextCursor = page.nextCursor;
       hasMore = page.hasMore;
       updateRowCountLabel();
       updateTableSortVisuals();
+      updateHuntingTimeSpanText();
       return page;
     } catch (err) {
       if (!requestIsCurrent()) return null;
@@ -3768,6 +3812,7 @@
   function isTableFiltered() {
     return (
       Boolean(gridFilterDescription) ||
+      Boolean(activeTimeFilter && (activeTimeFilter.fromEpoch !== null || activeTimeFilter.toEpoch !== null)) ||
       queryMode !== "normal" ||
       spec.expression !== null ||
       Boolean(spec.search) ||
@@ -4525,7 +4570,7 @@
     if (iocExtractionInFlight || sheetLoadInFlight) return null;
 
     iocExtractionInFlight = true;
-    extractIocsBtn.disabled = true;
+    if (extractIocsBtn) extractIocsBtn.disabled = true;
     showProgress("Extracting Indicators of Compromise...", 0);
     try {
       const summary = await invoke("extract_iocs");
@@ -4545,7 +4590,7 @@
     } finally {
       hideProgress();
       iocExtractionInFlight = false;
-      extractIocsBtn.disabled = !controlsEnabled || sheetLoadInFlight;
+      if (extractIocsBtn) extractIocsBtn.disabled = !controlsEnabled || sheetLoadInFlight;
     }
   }
 
@@ -5092,18 +5137,28 @@
       // If active grid has no file currently loaded, load the first file
       if (!currentPath && newPaths.length > 0) {
         const targetPath = newPaths[0];
+        // loadSheet() only proceeds for the *active* source request; without registering it
+        // here the call returned null immediately and the folder appeared to load nothing.
+        const folderSourceRequest = {
+          id: ++sourceLoadSequence,
+          path: targetPath,
+          previousPath: null,
+          previousSheet: null,
+        };
+        activeSourceLoad = folderSourceRequest;
+        setSourceLoadInFlight(true);
         try {
           const sheets = await invoke("list_sheets", { path: targetPath });
-          if (sheets.length > 0) {
-            await loadSheet(sheets[0], {
-              id: ++sourceLoadSequence,
-              path: targetPath,
-              previousPath: null,
-              previousSheet: null,
-            });
+          if (sheets.length > 0 && activeSourceLoad === folderSourceRequest) {
+            const firstEntry = loadedFiles.find((f) => f.path === targetPath);
+            if (firstEntry) firstEntry.indexing = false;
+            await loadSheet(sheets[0], folderSourceRequest);
           }
         } catch (e) {
           console.warn("Could not immediately display first file:", e);
+        } finally {
+          if (activeSourceLoad === folderSourceRequest) activeSourceLoad = null;
+          setSourceLoadInFlight(false);
         }
       }
 
@@ -5165,8 +5220,11 @@
           }
         });
       }
+      crossIocSummary = null;
+      intelScanSummaryResult = null;
       updateFileSwitcherUi();
       renderCorrelationScope();
+      updateEvidenceColumnsUi();
       return results;
     } catch (err) {
       console.error("batch_ensure_cached failed", err);
@@ -5741,6 +5799,11 @@
       table.on("renderComplete", () => {
         updateColumnHeaderSelectionStyles();
       });
+      table.on("rowDblClick", (e, row) => {
+        if (row && typeof row.getData === "function") {
+          openUnifiedRowDetailDrawer(row.getData());
+        }
+      });
     }
     return table;
   }
@@ -5897,6 +5960,7 @@
       });
       activeFileIndex = loadedFiles.length - 1;
     }
+    crossIocSummary = null;
     updateFileSwitcherUi();
     renderCorrelationScope();
 
@@ -5985,6 +6049,7 @@
 
     loadedFiles = [];
     activeFileIndex = -1;
+    crossIocSummary = null;
     updateFileSwitcherUi();
     renderCorrelationScope();
 
@@ -6170,8 +6235,8 @@
   }
 
   function renderCorrelationScope() {
-    if (!correlationFileCount || !correlationFilesList) return;
     const count = loadedFiles.length;
+    updateHuntingTimeSpanText();
     if (badgeCorrelation) {
       if (count > 1) {
         badgeCorrelation.textContent = `${count} files`;
@@ -6389,10 +6454,6 @@
     const fromEpoch = fromVal ? parseUserDateTimeToEpoch(fromVal) : null;
     const toEpoch = toVal ? parseUserDateTimeToEpoch(toVal) : null;
 
-    if (indicators.length === 0 && !fromEpoch && !toEpoch) {
-      alert("Please paste at least one indicator (IP, hash, domain, or keyword) to hunt for, or specify an incident time window.");
-      return;
-    }
     if (loadedFiles.length === 0) {
       crossSearchStatus.textContent = "No log files loaded to search. Use 'Open File' or 'Open Folder' to load logs first.";
       crossSearchStatus.classList.remove("hidden");
@@ -6400,7 +6461,10 @@
     }
 
     const timeDesc = (fromVal || toVal) ? ` within [${fromVal || "Start"} → ${toVal || "End"}]` : "";
-    crossSearchStatus.textContent = `Hunting ${indicators.length} indicators across ${loadedFiles.length} files${timeDesc}...`;
+    crossSearchStatus.textContent =
+      indicators.length > 0
+        ? `Hunting ${indicators.length} indicators across ${loadedFiles.length} files${timeDesc}...`
+        : `Building chronological Master Timeline across ${loadedFiles.length} files${timeDesc}...`;
     crossSearchStatus.classList.remove("hidden");
     crossSearchResults.innerHTML = "";
     crossSearchClearBtn?.classList.remove("hidden");
@@ -6422,18 +6486,21 @@
         }
       } catch (_) {}
 
-      const results = await invoke("cross_search_batch_files", {
-        files: filesPayload,
-        indicators,
-      });
+      const results =
+        indicators.length > 0
+          ? await invoke("cross_search_batch_files", {
+              files: filesPayload,
+              indicators,
+            })
+          : [];
 
       latestBatchResults = results || [];
       const matchedItems = latestBatchResults.filter((r) => r.totalMatches > 0);
       const matchedInds = matchedItems.map((m) => m.indicator);
 
-      // Fetch unified events across files
+      // Fetch unified events across files (either for matched indicators, or all files when hunting by time window / full timeline)
       let timelineEvents = [];
-      if (matchedInds.length > 0) {
+      if (matchedInds.length > 0 || indicators.length === 0) {
         showProgress("Correlating chronological timeline across files...", 0.6);
         timelineEvents = await invoke("get_unified_batch_events", {
           files: filesPayload,
@@ -6452,26 +6519,31 @@
           if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
             if (fromEpoch !== null && ep < fromEpoch) return false;
             if (toEpoch !== null && ep > toEpoch) return false;
+            return true;
           }
-          return true;
+          return false;
         });
       }
 
       latestMasterTimelineEvents = timelineEvents;
+      updateHuntingTimeSpanText();
 
       // Update dedicated hunting action bar
       const huntingBar = document.getElementById("hunting-actions-bar");
       const huntingTitle = document.getElementById("hunting-findings-title");
       if (huntingBar && huntingTitle) {
         huntingBar.classList.remove("hidden");
-        huntingTitle.textContent = `🎯 Master Timeline: ${timelineEvents.length.toLocaleString()} events matching ${matchedInds.length} indicators${timeDesc}`;
+        huntingTitle.textContent =
+          indicators.length > 0
+            ? `🎯 Master Timeline: ${timelineEvents.length.toLocaleString()} events matching ${matchedInds.length} indicators${timeDesc}`
+            : `🎯 Master Timeline: ${timelineEvents.length.toLocaleString()} correlated events across ${loadedFiles.length} files${timeDesc}`;
       }
 
       if (crossBatchExportBtn) {
         crossBatchExportBtn.disabled = (timelineEvents.length === 0);
       }
       if (correlationForensicExportBtn) {
-        correlationForensicExportBtn.disabled = (timelineEvents.length === 0);
+        correlationForensicExportBtn.disabled = (timelineEvents.length === 0 && loadedFiles.length === 0);
       }
 
       renderBatchSearchResults(latestBatchResults, indicators.length, timelineEvents, matchedInds);
@@ -6482,10 +6554,19 @@
     }
   }
 
-  function renderBatchSearchResults(results, totalQueried) {
+  function renderBatchSearchResults(results, totalQueried, timelineEvents = [], matchedInds = []) {
     crossSearchResults.innerHTML = "";
     const matchedItems = results.filter((r) => r.totalMatches > 0);
     const totalHitCount = results.reduce((acc, r) => acc + (r.totalMatches || 0), 0);
+
+    if (totalQueried === 0) {
+      crossSearchStatus.textContent = `Master Timeline Ready: ${timelineEvents.length.toLocaleString()} correlated events across ${loadedFiles.length} open file(s).`;
+      crossSearchStatus.classList.remove("hidden");
+      if (timelineEvents.length === 0) {
+        crossSearchResults.innerHTML = `<div class="correlation-empty-state">No events matched the selected time window across loaded files.</div>`;
+      }
+      return;
+    }
 
     crossSearchStatus.textContent = `Batch Results: ${matchedItems.length} of ${totalQueried} indicators matched (${totalHitCount.toLocaleString()} total event hits across open files).`;
     crossSearchStatus.classList.remove("hidden");
@@ -6688,6 +6769,15 @@
     if (!crossIocSummary) return;
     const { filesScanned, totalUniqueIocs, overlappingCount, items } = crossIocSummary;
     crossIocStatus.textContent = `Scanned ${filesScanned} files • Found ${totalUniqueIocs.toLocaleString()} unique indicators • ${overlappingCount.toLocaleString()} shared across 2+ files`;
+    if (badgeIocs) {
+      if (totalUniqueIocs > 0) {
+        badgeIocs.textContent = totalUniqueIocs.toLocaleString();
+        badgeIocs.classList.remove("hidden");
+      } else {
+        badgeIocs.textContent = "0";
+        badgeIocs.classList.add("hidden");
+      }
+    }
 
     const q = (crossIocSearch.value || "").trim().toLowerCase();
 
@@ -7358,9 +7448,20 @@
     }
 
     if (tabId === "tab-enrichment") {
+      updateEvidenceColumnsUi();
       if (intelScanSummaryResult && intelScanSummary && intelScanSummary.children.length === 0) {
         renderScanSummary(intelScanSummaryResult);
+      } else if (!intelScanSummaryResult && !intelScanInFlight && ((loadedFiles && loadedFiles.length > 0) || columns.length > 0)) {
+        runIntelScan({ allFiles: loadedFiles && loadedFiles.length > 1 }).catch((err) => {
+          console.error("Auto threat enrichment failed:", err);
+        });
       }
+    }
+    if (tabId === "tab-rules") {
+      if (columns.length > 0 && !ignoreRulesLoaded) {
+        loadIgnoreRules().catch(() => {});
+      }
+      renderRoleSuggestions();
     }
   }
 
@@ -7462,18 +7563,9 @@
       const btn = e.target.closest ? e.target.closest(".btn-time-preset") : null;
       if (!btn) return;
       const preset = btn.dataset.preset;
-      let minEpoch = null;
-      let maxEpoch = null;
-      if (isUnifiedCorrelatedMode && Array.isArray(unifiedCorrelatedRows)) {
-        unifiedCorrelatedRows.forEach((ev) => {
-          let ep = ev.epochMs ?? ev.epoch_ms;
-          if (!ep && ev.utcText) ep = parseUserDateTimeToEpoch(ev.utcText);
-          if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
-            if (minEpoch === null || ep < minEpoch) minEpoch = ep;
-            if (maxEpoch === null || ep > maxEpoch) maxEpoch = ep;
-          }
-        });
-      }
+      const bounds = getEvidenceTimeBounds();
+      const minEpoch = bounds ? bounds.min : null;
+      const maxEpoch = bounds ? bounds.max : null;
       if (!minEpoch || !maxEpoch) return;
 
       if (preset === "full") {
@@ -7937,18 +8029,26 @@
     removeFile();
   });
 
-  reviewRolesBtn.addEventListener("click", () => {
-    switchTab("tab-rules");
-    roleReviewPanel.classList.remove("hidden");
-    roleReviewPanel.open = true;
-  });
+  if (reviewRolesBtn) {
+    reviewRolesBtn.addEventListener("click", () => {
+      switchTab("tab-rules");
+      if (roleReviewPanel) {
+        roleReviewPanel.classList.remove("hidden");
+        roleReviewPanel.open = true;
+      }
+    });
+  }
 
-  manageIgnoreRulesBtn.addEventListener("click", () => {
-    switchTab("tab-rules");
-    ignoreRulesPanel.classList.remove("hidden");
-    ignoreRulesPanel.open = true;
-    if (!ignoreRulesLoaded) loadIgnoreRules();
-  });
+  if (manageIgnoreRulesBtn) {
+    manageIgnoreRulesBtn.addEventListener("click", () => {
+      switchTab("tab-rules");
+      if (ignoreRulesPanel) {
+        ignoreRulesPanel.classList.remove("hidden");
+        ignoreRulesPanel.open = true;
+      }
+      if (!ignoreRulesLoaded) loadIgnoreRules();
+    });
+  }
 
   sheetLoadBtn.addEventListener("click", () => {
     loadSheet(sheetSelect.value).catch((err) => console.error("import_sheet failed", err));
@@ -8042,13 +8142,27 @@
     });
   }
 
-  extractIocsBtn.addEventListener("click", () => {
-    runIocExtraction().catch((err) => alert(`IOC extraction failed: ${err}`));
-  });
+  if (includeBecChk) {
+    includeBecChk.addEventListener("change", () => {
+      if (!intelScanInFlight && ((loadedFiles && loadedFiles.length > 0) || columns.length > 0)) {
+        runIntelScan({ allFiles: loadedFiles && loadedFiles.length > 1 }).catch((err) =>
+          alert(`Threat enrichment failed: ${err}`)
+        );
+      }
+    });
+  }
 
-  iocPanelClose.addEventListener("click", () => {
-    iocPanel.open = false;
-  });
+  if (extractIocsBtn) {
+    extractIocsBtn.addEventListener("click", () => {
+      runIocExtraction().catch((err) => alert(`IOC extraction failed: ${err}`));
+    });
+  }
+
+  if (iocPanelClose) {
+    iocPanelClose.addEventListener("click", () => {
+      if (iocPanel) iocPanel.open = false;
+    });
+  }
 
   rolePanelClose.addEventListener("click", () => {
     roleReviewPanel.open = false;
@@ -8423,15 +8537,18 @@
           });
         }
 
-        if (isUnifiedCorrelatedMode && rowData) {
+        if (rowData) {
+          if (isUnifiedCorrelatedMode) {
+            items.push({
+              icon: "🔍",
+              label: "Jump to Native File Row",
+              action: () => jumpToNativeFileRow(rowData.path, rowData.row_num, rowData._unifiedIndex),
+            });
+          }
           items.push({
-            icon: "🔍",
-            label: "Jump to Native File Row",
-            action: () => jumpToNativeFileRow(rowData.path, rowData.row_num, rowData._unifiedIndex),
-          });
-          items.push({
-            icon: "👁️",
-            label: "Inspect Details",
+            icon: "✨",
+            label: "Inspect Details / Deobfuscate",
+            shortcut: "Dbl-Click",
             action: () => openUnifiedRowDetailDrawer(rowData),
           });
         }
@@ -9451,13 +9568,205 @@
     });
   }
 
-
-})();
-
-
   // =========================================================================
-  // Gemini AI Client & Forensic Analysis Integration
+  // Offline Forensic Deobfuscator & Gemini AI Integration
   // =========================================================================
+
+  function tryDecodeBase64Token(b64, utf16le = false) {
+    try {
+      const cleaned = b64.replace(/[^A-Za-z0-9+/=]/g, "");
+      if (cleaned.length < 12) return null;
+      const bin = atob(cleaned);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) {
+        bytes[i] = bin.charCodeAt(i);
+      }
+      let zeroOdd = 0;
+      for (let i = 1; i < bytes.length; i += 2) {
+        if (bytes[i] === 0) zeroOdd++;
+      }
+      const looksUtf16Le = utf16le || (bytes.length >= 8 && bytes.length % 2 === 0 && zeroOdd >= bytes.length / 4);
+      const text = new TextDecoder(looksUtf16Le ? "utf-16le" : "utf-8", { fatal: false }).decode(bytes).replace(/\x00/g, "").trim();
+      if (!text || text.length < 4) return null;
+      let printable = 0;
+      for (let i = 0; i < text.length; i++) {
+        const code = text.charCodeAt(i);
+        if ((code >= 32 && code <= 126) || code === 9 || code === 10 || code === 13) {
+          printable++;
+        }
+      }
+      if (printable / text.length < 0.8) return null;
+      return text;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function offlineDeobfuscatePayload(payload) {
+    const rawParts = [];
+    if (payload.action) rawParts.push(String(payload.action));
+    if (payload.details) rawParts.push(String(payload.details));
+    if (payload.rawFields && Array.isArray(payload.rawFields.fields)) {
+      payload.rawFields.fields.forEach((f) => {
+        if (f && f.value) rawParts.push(`${f.columnName}: ${f.value}`);
+      });
+    }
+    const combinedText = rawParts.join("\n");
+    const decodedArtifacts = [];
+
+    // 1. PowerShell -enc / -EncodedCommand (UTF-16LE Base64)
+    const psEncRegex = /(?:-e(?:nc(?:odedcommand)?)?|encodedcommand)[\s=:"']+([A-Za-z0-9+/=]{12,})/gi;
+    let m;
+    while ((m = psEncRegex.exec(combinedText)) !== null) {
+      const decoded = tryDecodeBase64Token(m[1], true);
+      if (decoded) {
+        decodedArtifacts.push({
+          type: "PowerShell EncodedCommand (UTF-16LE Base64)",
+          encoded: m[1].slice(0, 64) + (m[1].length > 64 ? "..." : ""),
+          decoded,
+        });
+      }
+    }
+
+    // 2. Generic Base64 blobs (FromBase64String or standalone long tokens)
+    const b64Regex = /(?:FromBase64String\s*\(\s*['"]|['"\s=])([A-Za-z0-9+/]{24,}={0,2})(?:['"\s)]|$)/g;
+    while ((m = b64Regex.exec(combinedText)) !== null) {
+      const candidate = m[1];
+      if (decodedArtifacts.some((d) => candidate.startsWith(d.encoded.replace("...", "")))) continue;
+      const decoded = tryDecodeBase64Token(candidate, false);
+      if (decoded) {
+        decodedArtifacts.push({
+          type: "Base64 Decoded Payload",
+          encoded: candidate.slice(0, 64) + (candidate.length > 64 ? "..." : ""),
+          decoded,
+        });
+      }
+    }
+
+    // 3. URL-encoded sequences (%XX)
+    if (/%[0-9A-Fa-f]{2}.*%[0-9A-Fa-f]{2}/.test(combinedText)) {
+      try {
+        const urlDecoded = decodeURIComponent(combinedText.replace(/\+/g, "%20"));
+        if (urlDecoded !== combinedText) {
+          decodedArtifacts.push({
+            type: "URL-Decoded Content",
+            encoded: "(percent-encoded URI/query parameters)",
+            decoded: urlDecoded.slice(0, 600),
+          });
+        }
+      } catch (_) {}
+    }
+
+    // 4. PowerShell tick / caret / string concatenation deobfuscation
+    const fullCorpus = [combinedText, ...decodedArtifacts.map((d) => d.decoded)].join("\n");
+    if (/[`^]/.test(fullCorpus) && /(?:p[`^]?o[`^]?w[`^]?e[`^]?r[`^]?s[`^]?h[`^]?e[`^]?l[`^]?l|i[`^]?e[`^]?x|i[`^]?n[`^]?v[`^]?o[`^]?k[`^]?e)/i.test(fullCorpus)) {
+      decodedArtifacts.push({
+        type: "Backtick / Caret Character Obfuscation Stripped",
+        encoded: "(obfuscated command tokens)",
+        decoded: fullCorpus.replace(/[`^]/g, "").slice(0, 600),
+      });
+    }
+
+    // 5. Behavioral & MITRE ATT&CK heuristics
+    const mitreFindings = [];
+    const rules = [
+      { re: /powershell|pwsh|-enc|frombase64string|invoke-expression|\biex\b|downloadstring|downloadfile/i, id: "T1059.001", name: "Command and Scripting Interpreter: PowerShell", note: "Suspicious PowerShell execution, encoded command, or in-memory download cradle." },
+      { re: /cmd\.exe\s+\/c|wscript|cscript|mshta|rundll32|regsvr32|certutil\s+-urlcache|bitsadmin/i, id: "T1218", name: "System Binary Proxy Execution (LOLBin)", note: "Living-off-the-Land binary used to proxy execution or fetch remote payloads." },
+      { re: /lsass|mimikatz|sekurlsa|procdump|comsvcs\.dll|ntds\.dit|sam\b.*system\b/i, id: "T1003", name: "OS Credential Dumping", note: "Attempt to access or dump credential material (LSASS / SAM / NTDS)." },
+      { re: /vssadmin.*delete.*shadows|wmic.*shadowcopy.*delete|bcdedit.*recoveryenabled|wbadmin.*delete/i, id: "T1490", name: "Inhibit System Recovery", note: "Ransomware/destructive command deleting volume shadow copies or backup catalogs." },
+      { re: /schtasks.*\/create|sc\.exe.*create|New-Service|Register-ScheduledTask|CurrentVersion\\Run/i, id: "T1053 / T1547", name: "Persistence (Scheduled Task / Service / Run Key)", note: "Creation of persistence mechanism via scheduled task, service, or registry run key." },
+      { re: /net\s+user|net\s+localgroup\s+administrators|New-LocalUser|Add-LocalGroupMember|dsadd/i, id: "T1136 / T1098", name: "Account Creation / Privilege Manipulation", note: "Account provisioning or privileged group membership modification." },
+      { re: /New-InboxRule|Set-InboxRule|ForwardTo|RedirectTo|ForwardAsAttachmentTo|Add-MailboxPermission/i, id: "T1114.003", name: "Email Collection: Email Forwarding Rule (BEC)", note: "Mailbox rule creation or forwarding modification commonly observed in Business Email Compromise." },
+      { re: /psexec|wmiexec|winrm|Enter-PSSession|Invoke-Command|mstsc|smbexec/i, id: "T1021", name: "Remote Services / Lateral Movement", note: "Remote execution or lateral movement across hosts." },
+      { re: /rclone|megasync|curl\s+.*-T|Invoke-RestMethod.*-Method\s+Post|archive|7z\.exe\s+a/i, id: "T1560 / T1041", name: "Archive & Exfiltration", note: "Data staging, compression, or outbound transfer." },
+    ];
+    rules.forEach((r) => {
+      if (r.re.test(fullCorpus)) {
+        mitreFindings.push(`• [${r.id}] ${r.name}: ${r.note}`);
+      }
+    });
+
+    // 6. Extract IOCs from raw + decoded text
+    const urls = [...new Set(fullCorpus.match(/https?:\/\/[^\s"'<>)+]+/gi) || [])];
+    const ips = [...new Set(fullCorpus.match(/\b(?:\d{1,3}\.){3}\d{1,3}\b/g) || [])];
+    const hashes = [...new Set(fullCorpus.match(/\b[A-Fa-f0-9]{32,64}\b/g) || [])];
+    const paths = [...new Set(fullCorpus.match(/(?:[A-Za-z]:\\[^\s"'<>|]+|\\[A-Za-z0-9_.-]+\\[^\s"'<>|]+|HKLM\\[^\s"']+|HKCU\\[^\s"']+)/g) || [])];
+
+    const lines = [];
+    lines.push("=== 1. OFFLINE FORENSIC DEOBFUSCATION ===");
+    if (decodedArtifacts.length > 0) {
+      decodedArtifacts.forEach((art, idx) => {
+        lines.push(`[#${idx + 1}] ${art.type}`);
+        lines.push(`  Encoded : ${art.encoded}`);
+        lines.push(`  Decoded : ${art.decoded}`);
+        lines.push("");
+      });
+    } else {
+      lines.push("No Base64 / UTF-16LE / URL-encoded obfuscation layers detected in this record.");
+      lines.push("");
+    }
+
+    lines.push("=== 2. BEHAVIORAL & MITRE ATT&CK ASSESSMENT ===");
+    if (mitreFindings.length > 0) {
+      mitreFindings.forEach((f) => lines.push(f));
+    } else {
+      lines.push("No high-risk LOLBin, credential access, or encoded execution signatures triggered.");
+    }
+    lines.push("");
+
+    lines.push("=== 3. EXTRACTED INDICATORS IN THIS RECORD ===");
+    if (urls.length > 0) lines.push(`• URLs       : ${urls.join(", ")}`);
+    if (ips.length > 0) lines.push(`• IPs        : ${ips.join(", ")}`);
+    if (hashes.length > 0) lines.push(`• Hashes     : ${hashes.slice(0, 8).join(", ")}`);
+    if (paths.length > 0) lines.push(`• Paths/Keys : ${paths.slice(0, 8).join(", ")}`);
+    if (urls.length === 0 && ips.length === 0 && hashes.length === 0 && paths.length === 0) {
+      lines.push("• No embedded URLs, IPv4 addresses, hashes, or Windows file/registry paths found.");
+    }
+
+    return lines.join("\n");
+  }
+
+  function generateOfflineIncidentNarrative(events, indicators) {
+    const files = [...new Set(events.map((e) => e.fileName).filter(Boolean))];
+    const users = [...new Set(events.map((e) => e.user).filter((u) => u && u !== "—"))];
+    const hosts = [...new Set(events.map((e) => e.host).filter((h) => h && h !== "—"))];
+    const tags = [...new Set(events.flatMap((e) => e.mitreTags || []).filter(Boolean))];
+    const firstEv = events[0];
+    const lastEv = events[events.length - 1];
+    const startTime = firstEv ? (firstEv.utcText || firstEv.timestamp || "Unknown") : "Unknown";
+    const endTime = lastEv ? (lastEv.utcText || lastEv.timestamp || "Unknown") : "Unknown";
+
+    const out = [];
+    out.push("### 📋 1. Executive Summary (Offline Forensic Synthesis)");
+    out.push(
+      `Correlated ${events.length.toLocaleString()} timeline events across ${files.length} evidence file(s) (${files.join(", ") || "active workspace"}) spanning ${startTime} to ${endTime} UTC.` +
+      (indicators && indicators.length > 0 ? ` Hunted indicators: ${indicators.join(", ")}.` : "") +
+      ` Observed ${users.length} distinct user identity/identities and ${hosts.length} host/IP endpoint(s).`
+    );
+    out.push("");
+    out.push("### ⏱ 2. Chronological Attack Reconstruction (Key Milestones)");
+    const sample = events.slice(0, 25);
+    sample.forEach((e, i) => {
+      const ts = e.utcText || e.timestamp || `#${e.row_num}`;
+      const actor = e.user && e.user !== "—" ? ` [User: ${e.user}]` : "";
+      const host = e.host && e.host !== "—" ? ` [Host: ${e.host}]` : "";
+      const act = e.action || "Event";
+      const det = e.details && e.details !== "—" ? ` — ${String(e.details).slice(0, 140)}` : "";
+      out.push(`${i + 1}. ${ts} (${e.fileName || "Log"})${actor}${host}: ${act}${det}`);
+    });
+    if (events.length > sample.length) {
+      out.push(`... and ${(events.length - sample.length).toLocaleString()} additional correlated events in the Master Timeline.`);
+    }
+    out.push("");
+    out.push("### 🎯 3. Identified Entities & Scope");
+    out.push(`• Evidence Files (${files.length}): ${files.slice(0, 15).join(", ") || "None"}`);
+    out.push(`• Users / Identities (${users.length}): ${users.slice(0, 20).join(", ") || "None"}`);
+    out.push(`• Hosts / Endpoints (${hosts.length}): ${hosts.slice(0, 20).join(", ") || "None"}`);
+    out.push("");
+    out.push("### 🛡 4. MITRE ATT&CK Tags Observed");
+    out.push(tags.length > 0 ? tags.map((t) => `• ${t}`).join("\n") : "• Run Threat Enrichment or configure a Gemini API key in ⚙ Settings for deep AI narrative synthesis.");
+    return out.join("\n");
+  }
 
   async function callGeminiApi(prompt, systemInstruction = "") {
     const apiKey = localStorage.getItem("logparser_gemini_api_key");
@@ -9465,7 +9774,7 @@
       throw new Error("No Gemini API Key configured. Please click ⚙ Settings in the top toolbar to enter your free API key.");
     }
     const model = localStorage.getItem("logparser_gemini_model") || "gemini-2.5-flash";
-    const url = https://generativelanguage.googleapis.com/v1beta/models/ + encodeURIComponent(model) + :generateContent?key= + encodeURIComponent(apiKey);
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(model)}:generateContent?key=${encodeURIComponent(apiKey)}`;
 
     const body = {
       contents: [{ role: "user", parts: [{ text: prompt }] }],
@@ -9482,8 +9791,8 @@
 
     if (!resp.ok) {
       const errJson = await resp.json().catch(() => null);
-      const errMsg = errJson?.error?.message || HTTP  + resp.status +   + resp.statusText;
-      throw new Error(Gemini API Error:  + errMsg);
+      const errMsg = errJson?.error?.message || `HTTP ${resp.status} ${resp.statusText}`;
+      throw new Error(`Gemini API Error: ${errMsg}`);
     }
 
     const data = await resp.json();
@@ -9503,7 +9812,16 @@
     if (!card || !body) return;
 
     card.classList.remove("hidden");
-    body.innerHTML = <div style="display:flex; align-items:center; gap:8px; color:var(--text-muted);"><span class="loading-spinner"></span> Synthesizing forensic master timeline with Gemini...</div>;
+    const apiKey = localStorage.getItem("logparser_gemini_api_key");
+    if (!apiKey) {
+      body.textContent = generateOfflineIncidentNarrative(events, indicators);
+      if (subtitle) {
+        subtitle.textContent = `Offline Forensic Synthesis (${events.length.toLocaleString()} events) — Configure Gemini API key in ⚙ Settings for cloud AI narrative`;
+      }
+      return;
+    }
+
+    body.innerHTML = `<div style="display:flex; align-items:center; gap:8px; color:var(--text-muted);"><span class="loading-spinner"></span> Synthesizing forensic master timeline with Gemini...</div>`;
 
     const sample = events.slice(0, 80).map((e, idx) => ({
       index: idx + 1,
@@ -9516,12 +9834,12 @@
       tags: e.mitreTags,
     }));
 
-    const prompt = You are a Lead Digital Forensics & Incident Response (DFIR) Investigator.
+    const prompt = `You are a Lead Digital Forensics & Incident Response (DFIR) Investigator.
 The examiner hunted for the following targeted indicators across multiple evidence files:
-Indicators:  + indicators.join(", ") + 
+Indicators: ${indicators.join(", ") || "(Full Time-Window Correlation)"}
 
 Correlated Master Evidence Timeline (chronological order):
- + JSON.stringify(sample, null, 2) + 
+${JSON.stringify(sample, null, 2)}
 
 Produce a rigorous, structured Forensic Incident Narrative containing:
 1. ### 📋 Executive Summary
@@ -9540,21 +9858,20 @@ Bullet list of observed attacker IPs, suspicious accounts, C2 domains, and malwa
 4. ### 🛡 MITRE ATT&CK Mapping
 Table or list mapping observed events to MITRE ATT&CK Tactics & Techniques.
 
-Ensure findings are strictly grounded in the log evidence. Do not hallucinate external details.;
+Ensure findings are strictly grounded in the log evidence. Do not hallucinate external details.`;
 
     try {
-      const narrative = await callGeminiApi(prompt, "You are an elite DFIR technical investigator producing court-ready and executive-ready forensic reports.");
+      const narrative = await callGeminiApi(
+        prompt,
+        "You are an elite DFIR technical investigator producing court-ready and executive-ready forensic reports."
+      );
       body.textContent = narrative;
       if (subtitle) {
-        subtitle.textContent = Analyzed  + sample.length +  timeline events across evidence files;
+        subtitle.textContent = `Analyzed ${sample.length} timeline events across evidence files`;
       }
     } catch (err) {
-      body.innerHTML = <div style="color:var(--danger, #ef4444); padding:10px; background:rgba(239,68,68,0.1); border-radius:4px;">
-        <strong>Gemini Analysis Error:</strong>  + escapeHtml(err.message) + 
-        <div style="margin-top:6px; font-size:11px; color:var(--text-muted);">
-          Please configure your Gemini API key in <strong>⚙ Settings</strong> in the top toolbar.
-        </div>
-      </div>;
+      const offlineText = generateOfflineIncidentNarrative(events, indicators);
+      body.textContent = `${offlineText}\n\n[Note: Gemini API call failed (${err.message}). Showing offline synthesis above.]`;
     }
   }
 
@@ -9565,7 +9882,6 @@ Ensure findings are strictly grounded in the log evidence. Do not hallucinate ex
     if (!panel || !content) return;
 
     panel.classList.remove("hidden");
-    content.innerHTML = <div style="display:flex; align-items:center; gap:8px; color:var(--text-muted);"><span class="loading-spinner"></span> Analyzing command line & deobfuscating with Gemini...</div>;
 
     const payload = {
       file: activeDrawerRowData.fileName,
@@ -9574,9 +9890,18 @@ Ensure findings are strictly grounded in the log evidence. Do not hallucinate ex
       rawFields: activeDrawerRawDetails,
     };
 
-    const prompt = You are a Senior DFIR Malware and Script Analyst.
+    const offlineReport = offlineDeobfuscatePayload(payload);
+    const apiKey = localStorage.getItem("logparser_gemini_api_key");
+    if (!apiKey) {
+      content.textContent = offlineReport;
+      return;
+    }
+
+    content.textContent = `${offlineReport}\n\n⏳ Querying Gemini AI for deeper script & LOLBin explanation...`;
+
+    const prompt = `You are a Senior DFIR Malware and Script Analyst.
 Analyze the following process execution or log record payload:
- + JSON.stringify(payload, null, 2) + 
+${JSON.stringify(payload, null, 2)}
 
 Tasks:
 1. Deobfuscation: If there are Base64 strings, encoded PowerShell commands (-enc, -encodedCommand), hex strings, environment variable concatenation, or download cradles, decode and expand them into clean, human-readable code.
@@ -9584,16 +9909,16 @@ Tasks:
 3. Extracted Hidden IOCs: List any discovered IPs, URLs, domains, registry keys, dropped file paths, or child processes in clean bullet points so the investigator can hunt for them.
 4. MITRE ATT&CK: Technique ID and name.
 
-If the command is benign or standard administrative activity, state that clearly.;
+If the command is benign or standard administrative activity, state that clearly.`;
 
     try {
-      const result = await callGeminiApi(prompt, "You are an expert DFIR analyst specializing in reverse-engineering command lines, PowerShell obfuscation, and living-off-the-land binaries (LOLBins).");
-      content.textContent = result;
+      const result = await callGeminiApi(
+        prompt,
+        "You are an expert DFIR analyst specializing in reverse-engineering command lines, PowerShell obfuscation, and living-off-the-land binaries (LOLBins)."
+      );
+      content.textContent = `${offlineReport}\n\n=== 4. GEMINI AI DEEP ANALYSIS ===\n${result}`;
     } catch (err) {
-      content.innerHTML = <div style="color:var(--danger, #ef4444); padding:8px; background:rgba(239,68,68,0.1); border-radius:4px;">
-        <strong>Deobfuscation Error:</strong>  + escapeHtml(err.message) + 
-        <div style="margin-top:4px; font-size:11px; color:var(--text-muted);">Configure your API key in <strong>⚙ Settings</strong>.</div>
-      </div>;
+      content.textContent = `${offlineReport}\n\n[Gemini AI Note: ${err.message}]`;
     }
   }
 
@@ -9609,8 +9934,22 @@ If the command is benign or standard administrative activity, state that clearly
     const statusDot = document.getElementById("gemini-status-dot");
     const statusText = document.getElementById("gemini-status-text");
 
+    function getStoredItem(k, fallback = "") {
+      try {
+        return (typeof localStorage !== "undefined" && localStorage ? localStorage.getItem(k) : null) || fallback;
+      } catch (_) {
+        return fallback;
+      }
+    }
+
+    function setStoredItem(k, v) {
+      try {
+        if (typeof localStorage !== "undefined" && localStorage) localStorage.setItem(k, v);
+      } catch (_) {}
+    }
+
     function updateStatus() {
-      const key = localStorage.getItem("logparser_gemini_api_key") || "";
+      const key = getStoredItem("logparser_gemini_api_key", "");
       if (key) {
         if (statusDot) statusDot.style.background = "#22c55e";
         if (statusText) statusText.textContent = "Connected: Gemini AI is active for deobfuscation and narratives";
@@ -9622,8 +9961,8 @@ If the command is benign or standard administrative activity, state that clearly
 
     function openModal() {
       if (!settingsModal) return;
-      if (keyInput) keyInput.value = localStorage.getItem("logparser_gemini_api_key") || "";
-      if (modelSelect) modelSelect.value = localStorage.getItem("logparser_gemini_model") || "gemini-2.5-flash";
+      if (keyInput) keyInput.value = getStoredItem("logparser_gemini_api_key", "");
+      if (modelSelect) modelSelect.value = getStoredItem("logparser_gemini_model", "gemini-2.5-flash");
       updateStatus();
       settingsModal.classList.remove("hidden");
       if (backdrop) backdrop.classList.remove("hidden");
@@ -9647,8 +9986,8 @@ If the command is benign or standard administrative activity, state that clearly
 
     if (saveBtn) {
       saveBtn.addEventListener("click", () => {
-        if (keyInput) localStorage.setItem("logparser_gemini_api_key", keyInput.value.trim());
-        if (modelSelect) localStorage.setItem("logparser_gemini_model", modelSelect.value);
+        if (keyInput) setStoredItem("logparser_gemini_api_key", keyInput.value.trim());
+        if (modelSelect) setStoredItem("logparser_gemini_model", modelSelect.value);
         updateStatus();
         closeModal();
       });
@@ -9662,28 +10001,56 @@ If the command is benign or standard administrative activity, state that clearly
     if (!spanText) return;
     const bounds = getEvidenceTimeBounds();
     if (bounds && bounds.min && bounds.max) {
-      spanText.textContent = formatEpochToUtcText(bounds.min) +  to  + formatEpochToUtcText(bounds.max) +  UTC;
+      spanText.textContent = `${formatEpochToUtcText(bounds.min)} to ${formatEpochToUtcText(bounds.max)} UTC`;
     } else {
-      spanText.textContent = loadedFiles.length > 0 ? "Loading timestamps..." : "No evidence loaded";
+      spanText.textContent = loadedFiles.length > 0 ? "Select preset or run hunt to inspect timestamps" : "No evidence loaded";
     }
   }
 
   function getEvidenceTimeBounds() {
     let minEpoch = null;
     let maxEpoch = null;
+    const considerEpoch = (ep) => {
+      if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
+        if (minEpoch === null || ep < minEpoch) minEpoch = ep;
+        if (maxEpoch === null || ep > maxEpoch) maxEpoch = ep;
+      }
+    };
+
+    const eventSources = [];
     if (Array.isArray(unifiedCorrelatedRows) && unifiedCorrelatedRows.length > 0) {
-      unifiedCorrelatedRows.forEach((r) => {
+      eventSources.push(unifiedCorrelatedRows);
+    }
+    if (Array.isArray(latestMasterTimelineEvents) && latestMasterTimelineEvents.length > 0) {
+      eventSources.push(latestMasterTimelineEvents);
+    }
+    eventSources.forEach((list) => {
+      list.forEach((r) => {
         let ep = r.epochMs ?? r.epoch_ms;
         if (!ep && (r.utcText || r.timestamp || r.norm_time)) {
           ep = parseUserDateTimeToEpoch(r.utcText || r.timestamp || r.norm_time);
         }
-        if (typeof ep === "number" && !isNaN(ep) && ep > 0) {
-          if (minEpoch === null || ep < minEpoch) minEpoch = ep;
-          if (maxEpoch === null || ep > maxEpoch) maxEpoch = ep;
-        }
+        considerEpoch(ep);
       });
+    });
+
+    if ((!minEpoch || !maxEpoch) && table && typeof table.getData === "function") {
+      try {
+        const rows = table.getData() || [];
+        const tsCol = findFirstDateTimeColumn(columns, columnRoleSuggestions);
+        rows.forEach((r) => {
+          let rawVal = tsCol && tsCol.sqlName ? r[tsCol.sqlName] : null;
+          if (!rawVal) {
+            rawVal = r.utcText || r.timestamp || r.time || r.date;
+          }
+          if (rawVal) {
+            considerEpoch(parseUserDateTimeToEpoch(String(rawVal)));
+          }
+        });
+      } catch (_) {}
     }
-    return (minEpoch && maxEpoch) ? { min: minEpoch, max: maxEpoch } : null;
+
+    return minEpoch && maxEpoch ? { min: minEpoch, max: maxEpoch } : null;
   }
 
   function initHuntingTimeInputs() {
@@ -9732,7 +10099,6 @@ If the command is benign or standard administrative activity, state that clearly
     }
   }
 
-
   // Initialize Settings Modal & Targeted Hunting
   try {
     initSettingsModal();
@@ -9745,7 +10111,9 @@ If the command is benign or standard administrative activity, state that clearly
         if (body && body.textContent) {
           navigator.clipboard.writeText(body.textContent).then(() => {
             copyNarrativeBtn.textContent = "✓ Copied!";
-            setTimeout(() => { copyNarrativeBtn.textContent = "📋 Copy Narrative"; }, 2000);
+            setTimeout(() => {
+              copyNarrativeBtn.textContent = "📋 Copy Narrative";
+            }, 2000);
           });
         }
       });
@@ -9779,3 +10147,4 @@ If the command is benign or standard administrative activity, state that clearly
   } catch (initErr) {
     console.error("Initialization error", initErr);
   }
+})();

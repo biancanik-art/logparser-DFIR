@@ -39,19 +39,26 @@
     </div>
 
     <!-- App Navigation Tabs -->
-        <!-- App Navigation Tabs -->
     <nav id="app-nav-tabs" class="app-nav-tabs" role="tablist">
-      <button class="nav-tab" data-tab="tab-iocs" role="tab" aria-selected="false">
-        <span class="tab-icon">🔍</span> Extracted IOCs (Multi-File)
-        <span id="badge-iocs" class="nav-tab-badge hidden">0</span>
+      <button class="nav-tab active" data-tab="tab-grid" role="tab" aria-selected="true">
+        <span class="tab-icon">📊</span> Evidence Grid
+        <span id="badge-grid" class="nav-tab-badge hidden">0</span>
       </button>
       <button class="nav-tab" data-tab="tab-correlation" role="tab" aria-selected="false">
         <span class="tab-icon">🎯</span> Targeted Hunt &amp; Master Timeline
         <span id="badge-correlation" class="nav-tab-badge hidden">0 files</span>
       </button>
-      <button class="nav-tab active" data-tab="tab-grid" role="tab" aria-selected="true">
-        <span class="tab-icon">📋</span> Evidence Grid
-        <span id="badge-grid" class="nav-tab-badge hidden">0</span>
+      <button class="nav-tab" data-tab="tab-iocs" role="tab" aria-selected="false">
+        <span class="tab-icon">🛡️</span> Extracted IOCs (Multi-File)
+        <span id="badge-iocs" class="nav-tab-badge hidden">0</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-enrichment" role="tab" aria-selected="false">
+        <span class="tab-icon">⚡</span> Threat Enrichment
+        <span id="badge-enrichment" class="nav-tab-badge hidden">0</span>
+      </button>
+      <button class="nav-tab" data-tab="tab-rules" role="tab" aria-selected="false">
+        <span class="tab-icon">⚙️</span> Data Mapping &amp; Rules
+        <span id="badge-rules" class="nav-tab-badge hidden">0</span>
       </button>
     </nav>
 
@@ -201,6 +208,17 @@
                 <span class="section-hint">Specify an incident timeframe and paste your list of threat indicators to correlate across all loaded files</span>
               </div>
             </div>
+
+            <details class="correlation-collapsible" open>
+              <summary class="correlation-summary-toggle">
+                <span class="correlation-summary-title">📂 Evidence Workspace Files</span>
+                <span id="correlation-file-count" class="correlation-count-badge">0 open files</span>
+                <span class="correlation-toggle-hint">(click a file to switch active grid view)</span>
+              </summary>
+              <div id="correlation-files-list" class="correlation-files-list">
+                <div class="correlation-empty-state">No files open. Use "Open File" or "Open Folder" to load evidence files.</div>
+              </div>
+            </details>
 
             <!-- Time Range & Input Grid -->
             <div class="hunting-workbench-grid">
@@ -540,7 +558,7 @@
       </div>
 
       <!-- TAB 4: Threat Enrichment -->
-      <div id="tab-enrichment" class="tab-pane" role="tabpanel" style="display:none !important;">
+      <div id="tab-enrichment" class="tab-pane" role="tabpanel">
         <div class="pane-header">
           <div class="pane-title-group">
             <h2 class="pane-title">Threat Enrichment &amp; MITRE ATT&amp;CK</h2>
@@ -569,7 +587,7 @@
       </div>
 
       <!-- TAB 5: Data Mapping & Rules -->
-      <div id="tab-rules" class="tab-pane" role="tabpanel" style="display:none !important;">
+      <div id="tab-rules" class="tab-pane" role="tabpanel">
         <div class="pane-header">
           <div class="pane-title-group">
             <h2 class="pane-title">Data Mapping, Ignore Rules &amp; Timestamps</h2>

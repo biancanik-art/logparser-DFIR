@@ -12,24 +12,39 @@ pub struct ImportResult {
 
 const BATCH_SIZE: u64 = 5000;
 
-fn csv_reader(path: &Path) -> Result<csv::Reader<File>> {
+fn csv_reader(path: &Path, delimiter: u8) -> Result<csv::Reader<File>> {
     csv::ReaderBuilder::new()
         .flexible(true)
         .has_headers(false)
+        .delimiter(delimiter)
         .from_path(path)
         .with_context(|| format!("opening CSV {}", path.display()))
 }
 
-fn count_csv_rows_and_detect_header(source_path: &Path) -> Result<(u64, bool, Vec<String>)> {
-    let mut reader = csv_reader(source_path)?;
-    let mut records = reader.records();
+/// Decodes a CSV field lossily. Exports from Windows tooling are often Windows-1252 encoded;
+/// a single stray byte must not abort the whole import (which `StringRecord` would do).
+fn field_text(record: &csv::ByteRecord, idx: usize) -> String {
+    record
+        .get(idx)
+        .map(|b| String::from_utf8_lossy(b).into_owned())
+        .unwrap_or_default()
+}
+
+fn count_csv_rows_and_detect_header(
+    source_path: &Path,
+    delimiter: u8,
+) -> Result<(u64, bool, Vec<String>)> {
+    let mut reader = csv_reader(source_path, delimiter)?;
+    let mut records = reader.byte_records();
     let first = match records.next() {
         Some(Ok(rec)) => rec,
         Some(Err(e)) => return Err(e).context("reading first CSV record"),
         None => return Ok((0, false, Vec::new())),
     };
 
-    let first_row: Vec<String> = first.iter().map(|s| s.to_string()).collect();
+    let first_row: Vec<String> = (0..first.len())
+        .map(|i| field_text(&first, i).trim_start_matches('\u{feff}').to_string())
+        .collect();
     let is_header = is_likely_header_row(&first_row);
 
     let mut count = if is_header { 0u64 } else { 1u64 };
@@ -46,9 +61,20 @@ fn count_csv_rows_and_detect_header(source_path: &Path) -> Result<(u64, bool, Ve
 pub fn import_into_db(
     source_path: &Path,
     db_path: &Path,
+    on_progress: impl FnMut(u64, u64),
+) -> Result<ImportResult> {
+    import_delimited_into_db(source_path, db_path, b',', on_progress)
+}
+
+/// Same as [`import_into_db`] with an explicit field delimiter (e.g. `b'\t'` for TSV).
+pub fn import_delimited_into_db(
+    source_path: &Path,
+    db_path: &Path,
+    delimiter: u8,
     mut on_progress: impl FnMut(u64, u64),
 ) -> Result<ImportResult> {
-    let (total_rows, is_header, first_row) = count_csv_rows_and_detect_header(source_path)?;
+    let (total_rows, is_header, first_row) =
+        count_csv_rows_and_detect_header(source_path, delimiter)?;
 
     let (columns, warning) = if first_row.is_empty() {
         (
@@ -84,8 +110,8 @@ pub fn import_into_db(
         placeholders.join(", ")
     );
 
-    let mut reader = csv_reader(source_path)?;
-    let mut records = reader.records().peekable();
+    let mut reader = csv_reader(source_path, delimiter)?;
+    let mut records = reader.byte_records().peekable();
     if is_header {
         // Skip header record so it is not inserted as data
         let _ = records.next();
@@ -110,7 +136,7 @@ pub fn import_into_db(
                     Vec::with_capacity(columns.len() + 1);
                 params.push(Box::new(row_num));
                 for col_idx in 0..columns.len() {
-                    let value = record.get(col_idx).unwrap_or_default().to_string();
+                    let value = field_text(&record, col_idx);
                     params.push(Box::new(value));
                 }
                 let param_refs: Vec<&dyn rusqlite::ToSql> =

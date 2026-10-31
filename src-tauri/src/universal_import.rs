@@ -3,7 +3,7 @@ use crate::header_utils::sanitize_headers;
 use anyhow::{bail, Context, Result};
 use chrono::{DateTime, Utc};
 use evtx::EvtxParser;
-use flate2::read::GzDecoder;
+use flate2::read::{GzDecoder, MultiGzDecoder};
 use rusqlite::Connection;
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -12,7 +12,7 @@ use std::io::{BufRead, BufReader, Read};
 use std::path::Path;
 
 const BATCH_SIZE: usize = 5000;
-const INITIAL_SCHEMA_SAMPLE_SIZE: usize = 1000;
+const INITIAL_SCHEMA_SAMPLE_SIZE: usize = 10_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UniversalFormat {
@@ -24,6 +24,7 @@ pub enum UniversalFormat {
     CompressedJsonLines,
     Evtx,
     Syslog,
+    CompressedSyslog,
     Xml,
     Excel,
 }
@@ -46,26 +47,79 @@ pub fn detect_format(path: &Path) -> Result<UniversalFormat> {
         return Ok(UniversalFormat::CompressedJson);
     }
 
-    if file_name.ends_with(".jsonl.gz") || file_name.ends_with(".log.gz") || file_name.ends_with(".gz") {
-        return Ok(UniversalFormat::CompressedJsonLines);
+    if file_name.ends_with(".gz") {
+        // `.jsonl.gz`, `.log.gz`, `.txt.gz`, rotated `syslog.2.gz`, ... — the inner name is not
+        // reliable, so sniff the decompressed content. Plain-text logs must not be parsed as
+        // JSONL (every line would land in `_parse_failures` and the grid would be empty).
+        let looks_json = File::open(path)
+            .ok()
+            .map(|f| first_line_looks_like_json(BufReader::new(GzDecoder::new(f))))
+            .unwrap_or(true);
+        return Ok(if looks_json {
+            UniversalFormat::CompressedJsonLines
+        } else {
+            UniversalFormat::CompressedSyslog
+        });
     }
 
-    match path
+    let ext = path
         .extension()
         .and_then(|ext| ext.to_str())
-        .map(|ext| ext.to_ascii_lowercase())
-        .as_deref()
-    {
+        .map(|ext| ext.to_ascii_lowercase());
+    match ext.as_deref() {
         Some("csv") => Ok(UniversalFormat::Csv),
         Some("tsv" | "tab") => Ok(UniversalFormat::Tsv),
         Some("json") => Ok(UniversalFormat::Json),
         Some("jsonl" | "ndjson") => Ok(UniversalFormat::JsonLines),
         Some("evtx") => Ok(UniversalFormat::Evtx),
-        Some("log" | "syslog" | "txt") => Ok(UniversalFormat::Syslog),
         Some("xml") => Ok(UniversalFormat::Xml),
         Some("xls" | "xlsx" | "xlsm" | "xlsb" | "ods") => Ok(UniversalFormat::Excel),
-        Some(ext) => bail!("unsupported file extension .{ext}"),
-        None => bail!("unsupported file type with no extension"),
+        // Plain-text logs. Many cloud/app exports are JSON-lines saved as `.log`/`.txt`, so
+        // sniff the first record. Also covers rotated logs (`auth.log.1`) and extensionless
+        // syslog files (`messages`, `syslog`) that the folder scanner picks up.
+        Some("log" | "syslog" | "txt") | None => Ok(sniff_text_log_format(path)),
+        Some(e) if e.chars().all(|c| c.is_ascii_digit()) => Ok(sniff_text_log_format(path)),
+        Some(e) => bail!("unsupported file extension .{e}"),
+    }
+}
+
+fn sniff_text_log_format(path: &Path) -> UniversalFormat {
+    let looks_json = File::open(path)
+        .ok()
+        .map(|f| first_line_looks_like_json(BufReader::new(f)))
+        .unwrap_or(false);
+    if looks_json {
+        UniversalFormat::JsonLines
+    } else {
+        UniversalFormat::Syslog
+    }
+}
+
+/// Returns true when the first non-empty line (within the first 64 lines) is a JSON object.
+fn first_line_looks_like_json<R: BufRead>(mut reader: R) -> bool {
+    let mut buf = Vec::new();
+    for _ in 0..64 {
+        buf.clear();
+        match reader.read_until(b'\n', &mut buf) {
+            Ok(0) | Err(_) => return false,
+            Ok(_) => {}
+        }
+        let line = String::from_utf8_lossy(&buf);
+        let line = line.trim_start_matches('\u{feff}').trim();
+        if line.is_empty() {
+            continue;
+        }
+        return line.starts_with('{') && serde_json::from_str::<Value>(line).is_ok();
+    }
+    false
+}
+
+/// Skips a UTF-8 byte-order mark so serde_json / line parsers don't choke on it.
+fn skip_utf8_bom<R: BufRead>(reader: &mut R) {
+    if let Ok(buf) = reader.fill_buf() {
+        if buf.starts_with(&[0xEF, 0xBB, 0xBF]) {
+            reader.consume(3);
+        }
     }
 }
 
@@ -331,11 +385,35 @@ pub fn import_stream_into_db(
 
     // Safety: Cap SQL table columns to prevent SQLite column overflow (SQLITE_MAX_COLUMN)
     const MAX_TABLE_COLUMNS: usize = 350;
+    let mut capped_columns = 0usize;
     if all_headers.len() > MAX_TABLE_COLUMNS {
+        capped_columns = all_headers.len() - MAX_TABLE_COLUMNS;
         all_headers.truncate(MAX_TABLE_COLUMNS);
     }
 
     let columns = sanitize_headers(&all_headers);
+
+    // Map every SQL column back to the *original* record key it is filled from. Column
+    // sanitization rewrites keys (`properties.userAgent` -> `properties_useragent`,
+    // `@timestamp` -> `timestamp`), so values must be looked up by the source key, never by
+    // the sanitized SQL name — otherwise nested/punctuated fields silently import as NULL.
+    let column_sources: Vec<ColumnSource> = columns
+        .iter()
+        .zip(all_headers.iter())
+        .enumerate()
+        .map(|(idx, (col, key))| {
+            if idx < canonical_cols.len() {
+                ColumnSource::Canonical(col.sql_name.clone())
+            } else {
+                ColumnSource::Field(key.clone())
+            }
+        })
+        .collect();
+    // Keys seen during sampling (before the column cap) — used to detect fields that only
+    // show up later in the stream, so the analyst is told instead of silently losing a column.
+    let schema_keys: HashSet<String> = discovered_columns.iter().cloned().collect();
+    let mut unmapped_keys: HashSet<String> = HashSet::new();
+    const MAX_TRACKED_UNMAPPED: usize = 10_000;
 
     let mut conn = db::open(db_path)?;
     db::set_import_pragmas(&conn)?;
@@ -365,9 +443,16 @@ pub fn import_stream_into_db(
         match record_res {
             Ok((parsed_fields, raw_str)) => {
                 row_count += 1;
+                if unmapped_keys.len() < MAX_TRACKED_UNMAPPED {
+                    for k in parsed_fields.keys() {
+                        if !schema_keys.contains(k) {
+                            unmapped_keys.insert(k.clone());
+                        }
+                    }
+                }
                 batch.push((row_count, parsed_fields, raw_str));
                 if batch.len() >= BATCH_SIZE {
-                    insert_batch(&mut conn, &insert_sql, &columns, &batch)?;
+                    insert_batch(&mut conn, &insert_sql, &column_sources, &batch)?;
                     batch.clear();
                     on_progress(row_count as u64, 0);
                 }
@@ -386,10 +471,14 @@ pub fn import_stream_into_db(
     }
 
     if !batch.is_empty() {
-        insert_batch(&mut conn, &insert_sql, &columns, &batch)?;
+        insert_batch(&mut conn, &insert_sql, &column_sources, &batch)?;
         batch.clear();
-        on_progress(row_count as u64, row_count as u64);
     }
+    on_progress(row_count as u64, row_count as u64);
+
+    // `rows_fts` is an external-content FTS5 table: without this step quick search / IOC
+    // text search finds nothing in JSON, EVTX, syslog and .gz evidence.
+    db::populate_fts(&conn, &columns)?;
 
     let now = Utc::now().to_rfc3339();
     let format_name = format!("{format:?}");
@@ -401,12 +490,31 @@ pub fn import_stream_into_db(
 
     db::restore_normal_pragmas(&conn)?;
 
-    let warning = if failure_count > 0 {
-        Some(format!(
-            "Ingestion completed with {failure_count} parsing failures logged to audit table (0 discarded)."
-        ))
-    } else {
+    let mut notes = Vec::new();
+    if failure_count > 0 {
+        notes.push(format!(
+            "{failure_count} records could not be parsed and were logged to the _parse_failures audit table (0 discarded)."
+        ));
+    }
+    if capped_columns > 0 {
+        notes.push(format!(
+            "{capped_columns} fields exceeded the {MAX_TABLE_COLUMNS}-column limit; their values remain searchable in the Original Evidence column."
+        ));
+    }
+    if !unmapped_keys.is_empty() {
+        let mut sample: Vec<&String> = unmapped_keys.iter().collect();
+        sample.sort();
+        let preview: Vec<&str> = sample.iter().take(5).map(|s| s.as_str()).collect();
+        notes.push(format!(
+            "{} fields first appeared after schema sampling (e.g. {}); their values are preserved in the Original Evidence column.",
+            unmapped_keys.len(),
+            preview.join(", ")
+        ));
+    }
+    let warning = if notes.is_empty() {
         None
+    } else {
+        Some(notes.join(" "))
     };
 
     Ok(UniversalImportResult {
@@ -417,10 +525,17 @@ pub fn import_stream_into_db(
     })
 }
 
+/// Where a SQL column's value comes from: one of the synthetic normalized columns, or an
+/// original record key (pre-sanitization).
+enum ColumnSource {
+    Canonical(String),
+    Field(String),
+}
+
 fn insert_batch(
     conn: &mut Connection,
     insert_sql: &str,
-    columns: &[ColumnMeta],
+    column_sources: &[ColumnSource],
     batch: &[(i64, HashMap<String, String>, String)],
 ) -> Result<()> {
     let tx = conn.transaction()?;
@@ -430,27 +545,22 @@ fn insert_batch(
             let (norm_time, norm_ip, norm_user, norm_host, norm_process, norm_req_id) =
                 extract_normalized_fields(fields);
 
-            let mut values: Vec<Option<String>> = Vec::with_capacity(columns.len() + 1);
+            let mut values: Vec<Option<String>> = Vec::with_capacity(column_sources.len() + 1);
             values.push(Some(row_num.to_string()));
 
-            for col in columns {
-                match col.sql_name.as_str() {
-                    "norm_time" => values.push(norm_time.clone()),
-                    "norm_ip" => values.push(norm_ip.clone()),
-                    "norm_user" => values.push(norm_user.clone()),
-                    "norm_host" => values.push(norm_host.clone()),
-                    "norm_process" => values.push(norm_process.clone()),
-                    "norm_req_id" => values.push(norm_req_id.clone()),
-                    "raw_evidence" => values.push(Some(raw_str.clone())),
-                    other => {
-                        let val = fields.get(other).cloned().or_else(|| {
-                            fields
-                                .iter()
-                                .find(|(k, _)| k.eq_ignore_ascii_case(other))
-                                .map(|(_, v)| v.clone())
-                        });
-                        values.push(val);
-                    }
+            for source in column_sources {
+                match source {
+                    ColumnSource::Canonical(name) => match name.as_str() {
+                        "norm_time" => values.push(norm_time.clone()),
+                        "norm_ip" => values.push(norm_ip.clone()),
+                        "norm_user" => values.push(norm_user.clone()),
+                        "norm_host" => values.push(norm_host.clone()),
+                        "norm_process" => values.push(norm_process.clone()),
+                        "norm_req_id" => values.push(norm_req_id.clone()),
+                        "raw_evidence" => values.push(Some(raw_str.clone())),
+                        _ => values.push(None),
+                    },
+                    ColumnSource::Field(key) => values.push(fields.get(key).cloned()),
                 }
             }
 
@@ -465,97 +575,122 @@ fn insert_batch(
     Ok(())
 }
 
+type RecordResult = Result<(HashMap<String, String>, String), (String, String)>;
+
 trait RecordStream {
-    fn next_record(&mut self) -> Option<Result<(HashMap<String, String>, String), (String, String)>>;
+    fn next_record(&mut self) -> Option<RecordResult>;
 }
 
 struct LineRecordStream<R: Read> {
     reader: BufReader<R>,
     format: UniversalFormat,
-    line_buf: String,
+    line_buf: Vec<u8>,
+    finished: bool,
 }
 
 impl<R: Read> LineRecordStream<R> {
     fn new(reader: R, format: UniversalFormat) -> Self {
+        let mut reader = BufReader::with_capacity(256 * 1024, reader);
+        skip_utf8_bom(&mut reader);
         Self {
-            reader: BufReader::new(reader),
+            reader,
             format,
-            line_buf: String::new(),
+            line_buf: Vec::new(),
+            finished: false,
         }
     }
 }
 
 impl<R: Read> RecordStream for LineRecordStream<R> {
-    fn next_record(&mut self) -> Option<Result<(HashMap<String, String>, String), (String, String)>> {
-        self.line_buf.clear();
-        match self.reader.read_line(&mut self.line_buf) {
-            Ok(0) => None,
-            Ok(_) => {
-                let raw = self.line_buf.trim();
-                if raw.is_empty() {
-                    return self.next_record();
-                }
-
-                match self.format {
-                    UniversalFormat::JsonLines | UniversalFormat::CompressedJsonLines => {
-                        match serde_json::from_str::<Value>(raw) {
-                            Ok(val) => {
-                                let mut fields = HashMap::new();
-                                flatten_json_value("", &val, &mut fields);
-                                Some(Ok((fields, raw.to_string())))
-                            }
-                            Err(e) => Some(Err((format!("JSONL parse error: {e}"), raw.to_string()))),
-                        }
-                    }
-                    UniversalFormat::Syslog => {
-                        let mut fields = HashMap::new();
-                        parse_syslog_line(raw, &mut fields);
-                        Some(Ok((fields, raw.to_string())))
-                    }
-                    _ => {
-                        let mut fields = HashMap::new();
-                        fields.insert("message".to_string(), raw.to_string());
-                        Some(Ok((fields, raw.to_string())))
-                    }
+    fn next_record(&mut self) -> Option<RecordResult> {
+        // Loop (not recurse) over blank lines: logs with long runs of empty lines must not
+        // blow the stack.
+        loop {
+            if self.finished {
+                return None;
+            }
+            self.line_buf.clear();
+            match self.reader.read_until(b'\n', &mut self.line_buf) {
+                Ok(0) => return None,
+                Ok(_) => {}
+                // A corrupt/truncated gzip member or disk error: report once and stop rather
+                // than spinning on the same error forever.
+                Err(e) => {
+                    self.line_buf.clear();
+                    self.finished = true;
+                    return Some(Err((format!("I/O read error (stream truncated): {e}"), String::new())));
                 }
             }
-            Err(e) => Some(Err((format!("I/O read error: {e}"), String::new()))),
+            // Lossy decode: Windows-1252 / Latin-1 bytes in logs must not drop the record.
+            let decoded = String::from_utf8_lossy(&self.line_buf);
+            let raw = decoded.trim();
+            if raw.is_empty() {
+                continue;
+            }
+
+            return match self.format {
+                UniversalFormat::JsonLines | UniversalFormat::CompressedJsonLines => {
+                    match serde_json::from_str::<Value>(raw) {
+                        Ok(val) => {
+                            let mut fields = HashMap::new();
+                            flatten_json_value("", &val, &mut fields);
+                            Some(Ok((fields, raw.to_string())))
+                        }
+                        Err(e) => Some(Err((format!("JSONL parse error: {e}"), raw.to_string()))),
+                    }
+                }
+                UniversalFormat::Syslog | UniversalFormat::CompressedSyslog => {
+                    let mut fields = HashMap::new();
+                    parse_syslog_line(raw, &mut fields);
+                    Some(Ok((fields, raw.to_string())))
+                }
+                _ => {
+                    let mut fields = HashMap::new();
+                    fields.insert("message".to_string(), raw.to_string());
+                    Some(Ok((fields, raw.to_string())))
+                }
+            };
         }
     }
 }
 
+/// Streams EVTX records from a worker thread through a bounded channel. Previously the whole
+/// file was materialized in memory — and twice, because schema sampling re-parsed it — which
+/// made large Security.evtx files slow or crash with OOM.
 struct EvtxRecordStream {
-    records: Box<dyn Iterator<Item = Result<(HashMap<String, String>, String), (String, String)>> + Send>,
+    rx: std::sync::mpsc::Receiver<RecordResult>,
 }
 
 impl EvtxRecordStream {
     fn new(path: &Path) -> Result<Self> {
         let mut parser = EvtxParser::from_path(path).context("opening EVTX file")?;
-        let mut items = Vec::new();
-        for record_res in parser.records_json_value() {
-            match record_res {
-                Ok(rec) => {
-                    let mut fields = HashMap::new();
-                    fields.insert("event_record_id".to_string(), rec.event_record_id.to_string());
-                    fields.insert("timestamp".to_string(), rec.timestamp.to_rfc3339());
-                    flatten_json_value("", &rec.data, &mut fields);
-                    let raw = rec.data.to_string();
-                    items.push(Ok((fields, raw)));
-                }
-                Err(e) => {
-                    items.push(Err((format!("EVTX parse error: {e}"), String::new())));
+        let (tx, rx) = std::sync::mpsc::sync_channel::<RecordResult>(2048);
+        std::thread::spawn(move || {
+            for record_res in parser.records_json_value() {
+                let item = match record_res {
+                    Ok(rec) => {
+                        let mut fields = HashMap::new();
+                        fields.insert("event_record_id".to_string(), rec.event_record_id.to_string());
+                        fields.insert("timestamp".to_string(), rec.timestamp.to_rfc3339());
+                        flatten_json_value("", &rec.data, &mut fields);
+                        let raw = rec.data.to_string();
+                        Ok((fields, raw))
+                    }
+                    Err(e) => Err((format!("EVTX parse error: {e}"), String::new())),
+                };
+                // Receiver dropped (e.g. schema sampling finished early) -> stop parsing.
+                if tx.send(item).is_err() {
+                    break;
                 }
             }
-        }
-        Ok(Self {
-            records: Box::new(items.into_iter()),
-        })
+        });
+        Ok(Self { rx })
     }
 }
 
 impl RecordStream for EvtxRecordStream {
-    fn next_record(&mut self) -> Option<Result<(HashMap<String, String>, String), (String, String)>> {
-        self.records.next()
+    fn next_record(&mut self) -> Option<RecordResult> {
+        self.rx.recv().ok()
     }
 }
 
@@ -582,9 +717,11 @@ fn open_record_stream(
     format: UniversalFormat,
 ) -> Result<Box<dyn RecordStream>> {
     match format {
-        UniversalFormat::CompressedJsonLines => {
+        UniversalFormat::CompressedJsonLines | UniversalFormat::CompressedSyslog => {
             let file = File::open(source_path)?;
-            let gz = GzDecoder::new(file);
+            // MultiGzDecoder: rotated/concatenated logs are frequently multi-member gzip
+            // streams; GzDecoder silently stops after the first member.
+            let gz = MultiGzDecoder::new(file);
             Ok(Box::new(LineRecordStream::new(gz, format)))
         }
         UniversalFormat::JsonLines | UniversalFormat::Syslog => {
@@ -593,62 +730,78 @@ fn open_record_stream(
         }
         UniversalFormat::Evtx => Ok(Box::new(EvtxRecordStream::new(source_path)?)),
         UniversalFormat::Json | UniversalFormat::CompressedJson => {
-            let file = File::open(source_path)?;
-            let root_val: Value = if format == UniversalFormat::CompressedJson {
-                let gz = GzDecoder::new(file);
-                let reader = BufReader::new(gz);
-                match serde_json::from_reader(reader) {
-                    Ok(val) => val,
-                    Err(_) => {
-                        let file2 = File::open(source_path)?;
-                        let gz2 = GzDecoder::new(file2);
-                        return Ok(Box::new(LineRecordStream::new(gz2, UniversalFormat::CompressedJsonLines)));
-                    }
+            let compressed = format == UniversalFormat::CompressedJson;
+            let open_reader = || -> Result<Box<dyn Read>> {
+                let file = File::open(source_path)?;
+                Ok(if compressed {
+                    Box::new(MultiGzDecoder::new(file))
+                } else {
+                    Box::new(file)
+                })
+            };
+            let mut reader = BufReader::with_capacity(256 * 1024, open_reader()?);
+            skip_utf8_bom(&mut reader);
+            let root_val: Value = match serde_json::from_reader(reader) {
+                Ok(val) => val,
+                Err(_) => {
+                    // Very common in practice: a `.json` export that is really JSON-lines
+                    // (one object per line). Fall back instead of failing the whole import;
+                    // genuinely malformed lines are still recorded in `_parse_failures`.
+                    let line_format = if compressed {
+                        UniversalFormat::CompressedJsonLines
+                    } else {
+                        UniversalFormat::JsonLines
+                    };
+                    return Ok(Box::new(LineRecordStream::new(open_reader()?, line_format)));
                 }
-            } else {
-                let reader = BufReader::new(file);
-                serde_json::from_reader(reader)?
             };
             let items: Vec<Value> = match root_val {
                 Value::Array(arr) => arr,
-                Value::Object(map) => {
+                Value::Object(mut map) => {
                     let candidate_keys = [
                         "value", "records", "events", "data", "items", "logs",
                         "logentries", "entries", "rows", "results", "hits", "messages",
                     ];
-                    let mut found_arr = None;
+                    let mut found_key: Option<(String, Option<String>)> = None;
                     for (k, v) in &map {
                         let lk = k.to_ascii_lowercase();
                         if candidate_keys.contains(&lk.as_str()) {
-                            if let Value::Array(arr) = v {
-                                found_arr = Some(arr.clone());
+                            if v.is_array() {
+                                found_key = Some((k.clone(), None));
                                 break;
                             } else if let Value::Object(submap) = v {
-                                for (_, sv) in submap {
-                                    if let Value::Array(subarr) = sv {
-                                        found_arr = Some(subarr.clone());
-                                        break;
-                                    }
-                                }
-                                if found_arr.is_some() {
+                                if let Some((sk, _)) = submap.iter().find(|(_, sv)| sv.is_array()) {
+                                    found_key = Some((k.clone(), Some(sk.clone())));
                                     break;
                                 }
                             }
                         }
                     }
 
-                    if found_arr.is_none() {
-                        for (_, v) in &map {
-                            if let Value::Array(arr) = v {
-                                if !arr.is_empty() && arr.iter().any(|item| item.is_object()) {
-                                    found_arr = Some(arr.clone());
-                                    break;
-                                }
-                            }
-                        }
+                    if found_key.is_none() {
+                        found_key = map
+                            .iter()
+                            .find(|(_, v)| {
+                                v.as_array()
+                                    .is_some_and(|arr| arr.iter().any(|item| item.is_object()))
+                            })
+                            .map(|(k, _)| (k.clone(), None));
                     }
 
-                    found_arr.unwrap_or_else(|| vec![Value::Object(map)])
+                    // Move (not clone) the record array out of the document: these exports
+                    // can be hundreds of MB.
+                    let taken = match found_key {
+                        Some((k, None)) => map.remove(&k),
+                        Some((k, Some(sk))) => map
+                            .get_mut(&k)
+                            .and_then(|v| v.as_object_mut())
+                            .and_then(|sub| sub.remove(&sk)),
+                        None => None,
+                    };
+                    match taken {
+                        Some(Value::Array(arr)) => arr,
+                        _ => vec![Value::Object(map)],
+                    }
                 }
                 other => vec![other],
             };
@@ -668,16 +821,19 @@ fn sample_records(
     format: UniversalFormat,
 ) -> Result<(Vec<String>, Vec<HashMap<String, String>>)> {
     let mut columns_set = HashSet::new();
-    let mut sample_rows = Vec::new();
+    // Rows are not retained (callers only need the column set); keeping 10k flattened
+    // records alive here would just waste memory during import.
+    let sample_rows = Vec::new();
     let mut stream = open_record_stream(source_path, format)?;
 
     let mut count = 0;
     while let Some(res) = stream.next_record() {
         if let Ok((fields, _)) = res {
             for k in fields.keys() {
-                columns_set.insert(k.clone());
+                if !columns_set.contains(k) {
+                    columns_set.insert(k.clone());
+                }
             }
-            sample_rows.push(fields);
             count += 1;
             if count >= INITIAL_SCHEMA_SAMPLE_SIZE {
                 break;

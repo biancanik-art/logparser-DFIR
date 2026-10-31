@@ -1891,7 +1891,7 @@ fn find_matching_timeline_rows(
     if keywords.is_empty() {
         if table_exists(conn, "_intel_match")? {
             let mut stmt = conn.prepare(
-                "SELECT DISTINCT row_num FROM _intel_match ORDER BY row_num ASC LIMIT 200",
+                "SELECT DISTINCT row_num FROM _intel_match ORDER BY row_num ASC LIMIT 500",
             )?;
             let rows: Vec<i64> = stmt
                 .query_map([], |r| r.get(0))?
@@ -1900,7 +1900,7 @@ fn find_matching_timeline_rows(
                 return Ok(rows);
             }
         }
-        let mut stmt = conn.prepare("SELECT row_num FROM rows ORDER BY row_num ASC LIMIT 100")?;
+        let mut stmt = conn.prepare("SELECT row_num FROM rows ORDER BY row_num ASC LIMIT 500")?;
         let rows: Vec<i64> = stmt
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1908,9 +1908,11 @@ fn find_matching_timeline_rows(
     }
 
     let mut row_set = std::collections::BTreeSet::new();
+    let has_fts = table_exists(conn, "rows_fts")?;
 
-    if table_exists(conn, "rows_fts")? {
-        for kw in keywords {
+    for kw in keywords {
+        let mut kw_matched = false;
+        if has_fts {
             let escaped = kw.replace('"', "\"\"");
             let phrase = format!("\"{escaped}\"");
             if let Ok(mut stmt) =
@@ -1919,20 +1921,31 @@ fn find_matching_timeline_rows(
                 if let Ok(rows) = stmt.query_map([&phrase], |r| r.get::<_, i64>(0)) {
                     for r in rows.flatten() {
                         row_set.insert(r);
+                        kw_matched = true;
+                    }
+                }
+            }
+            if !kw_matched && !kw.contains(' ') && !kw.contains('*') {
+                let prefix_phrase = format!("\"{escaped}\"*");
+                if let Ok(mut stmt) = conn.prepare(
+                    "SELECT rowid FROM rows_fts WHERE rows_fts MATCH ?1 ORDER BY rowid ASC",
+                ) {
+                    if let Ok(rows) = stmt.query_map([&prefix_phrase], |r| r.get::<_, i64>(0)) {
+                        for r in rows.flatten() {
+                            row_set.insert(r);
+                            kw_matched = true;
+                        }
                     }
                 }
             }
         }
-    }
 
-    if row_set.is_empty() {
-        for col in columns {
-            if col.inferred_type != "blob" {
-                let ident = db::quote_ident(&col.sql_name);
-                for kw in keywords {
-                    let pattern = format!("%{kw}%");
-                    let sql =
-                        format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1 LIMIT 200");
+        if !kw_matched {
+            let pattern = format!("%{kw}%");
+            for col in columns {
+                if col.inferred_type != "blob" {
+                    let ident = db::quote_ident(&col.sql_name);
+                    let sql = format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1 LIMIT 200");
                     if let Ok(mut stmt) = conn.prepare(&sql) {
                         if let Ok(rows) = stmt.query_map([&pattern], |r| r.get::<_, i64>(0)) {
                             for r in rows.flatten() {
@@ -2947,21 +2960,9 @@ pub fn collect_events_across_files(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| target.path.clone());
-        let sheet_name = target.sheet.clone().unwrap_or_default();
-
-        let db_path = if let Some(ref p) = target.cache_db_path {
-            let candidate = std::path::PathBuf::from(p);
-            if candidate.exists() {
-                candidate
-            } else {
-                db::cache_db_path(std::path::Path::new(&target.path), &sheet_name)
-                    .unwrap_or_else(|_| std::path::PathBuf::from(p))
-            }
-        } else {
-            match db::cache_db_path(std::path::Path::new(&target.path), &sheet_name) {
-                Ok(p) => p,
-                Err(_) => continue,
-            }
+        let (_sheet_name, db_path) = match target.ensure_cached_db() {
+            Ok(pair) => pair,
+            Err(_) => continue,
         };
 
         if !db_path.exists() {
@@ -3039,9 +3040,6 @@ pub fn extract_unified_events_for_indicators(
         .map(|i| i.trim().to_string())
         .filter(|i| !i.is_empty())
         .collect();
-    if clean_indicators.is_empty() {
-        return Vec::new();
-    }
     let (events, _) = collect_events_across_files(targets, &clean_indicators);
     events
 }

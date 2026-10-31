@@ -67,9 +67,12 @@ pub fn import_into_db(
             excel_import::import_into_db(source_path, sheet_name, db_path, on_progress)
                 .map(Into::into)
         }
-        UniversalFormat::Csv => {
-            // Still using fast csv_import for standard CSVs, but initialize audit tables
-            let res = csv_import::import_into_db(source_path, db_path, on_progress)?;
+        UniversalFormat::Csv | UniversalFormat::Tsv => {
+            // Still using fast csv_import for standard CSVs, but initialize audit tables.
+            // TSV previously fell through to the line-based importer and landed as a single
+            // unparsed "message" column.
+            let delimiter = if fmt == UniversalFormat::Tsv { b'\t' } else { b',' };
+            let res = csv_import::import_delimited_into_db(source_path, db_path, delimiter, on_progress)?;
             if let Ok(conn) = crate::db::open(db_path) {
                 let _ = universal_import::create_audit_tables_if_needed(&conn);
             }

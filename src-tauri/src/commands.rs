@@ -1934,6 +1934,98 @@ pub struct FileTarget {
     pub cache_db_path: Option<String>,
 }
 
+impl FileTarget {
+    pub fn resolve_sheet_and_db_path(&self) -> Result<(String, PathBuf), anyhow::Error> {
+        let explicit_sheet = self.sheet.clone().unwrap_or_default();
+        if let Some(ref p) = self.cache_db_path {
+            let candidate = PathBuf::from(p);
+            if candidate.exists() {
+                let resolved_sheet = if !explicit_sheet.is_empty() {
+                    explicit_sheet
+                } else {
+                    tabular_import::list_sheet_names(Path::new(&self.path))
+                        .ok()
+                        .and_then(|sheets| sheets.into_iter().next())
+                        .unwrap_or_default()
+                };
+                return Ok((resolved_sheet, candidate));
+            }
+        }
+        if !explicit_sheet.is_empty() {
+            let db_path = db::cache_db_path(Path::new(&self.path), &explicit_sheet)?;
+            return Ok((explicit_sheet, db_path));
+        }
+        let empty_sheet_path = db::cache_db_path(Path::new(&self.path), "")?;
+        if empty_sheet_path.exists() {
+            return Ok((String::new(), empty_sheet_path));
+        }
+        let default_sheet = tabular_import::list_sheet_names(Path::new(&self.path))
+            .ok()
+            .and_then(|sheets| sheets.into_iter().next())
+            .unwrap_or_default();
+        let db_path = db::cache_db_path(Path::new(&self.path), &default_sheet)?;
+        Ok((default_sheet, db_path))
+    }
+
+    pub fn ensure_cached_db(&self) -> Result<(String, PathBuf), anyhow::Error> {
+        let (sheet_name, db_path) = self.resolve_sheet_and_db_path()?;
+        if db_path.exists() {
+            return Ok((sheet_name, db_path));
+        }
+        let src_path = Path::new(&self.path);
+        if src_path.is_file() {
+            let import_sheet = if sheet_name.is_empty() {
+                tabular_import::list_sheet_names(src_path)
+                    .ok()
+                    .and_then(|sheets| sheets.into_iter().next())
+                    .unwrap_or_else(|| "Sheet1".to_string())
+            } else {
+                sheet_name.clone()
+            };
+            let target_db_path = db::cache_db_path(src_path, &import_sheet)?;
+            if target_db_path.exists() {
+                return Ok((import_sheet, target_db_path));
+            }
+            let tmp_db_path = PathBuf::from(format!(
+                "{}.tmp.{}",
+                target_db_path.display(),
+                std::process::id()
+            ));
+            let _ = std::fs::remove_file(&tmp_db_path);
+            match tabular_import::import_into_db(src_path, &import_sheet, &tmp_db_path, |_, _| {}) {
+                Ok(import_result) => {
+                    let record_res = db::open(&tmp_db_path).and_then(|conn| {
+                        db::record_import_info(
+                            &conn,
+                            &ImportInfo {
+                                source_path: self.path.clone(),
+                                sheet_name: import_sheet.clone(),
+                                row_count: import_result.row_count,
+                                imported_at: now_marker(),
+                            },
+                        )
+                    });
+                    if record_res.is_ok() {
+                        if !target_db_path.exists() {
+                            let _ = std::fs::rename(&tmp_db_path, &target_db_path);
+                        }
+                        let _ = std::fs::remove_file(&tmp_db_path);
+                        if target_db_path.exists() {
+                            return Ok((import_sheet, target_db_path));
+                        }
+                    } else {
+                        let _ = std::fs::remove_file(&tmp_db_path);
+                    }
+                }
+                Err(_) => {
+                    let _ = std::fs::remove_file(&tmp_db_path);
+                }
+            }
+        }
+        Ok((sheet_name, db_path))
+    }
+}
+
 #[derive(Serialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct CrossFileSnippet {
@@ -2049,6 +2141,19 @@ pub fn is_forensic_evidence_file(file_name: &str) -> bool {
         || lower.ends_with(".ods")
     {
         return true;
+    }
+    // Rotated plain-text logs: auth.log.1, syslog.2, messages.3, app.txt.10
+    if let Some((stem, last)) = lower.rsplit_once('.') {
+        if !last.is_empty()
+            && last.chars().all(|c| c.is_ascii_digit())
+            && (stem.ends_with(".log")
+                || stem.ends_with(".txt")
+                || stem == "syslog"
+                || stem == "messages"
+                || stem == "secure")
+        {
+            return true;
+        }
     }
 
     false
@@ -2411,31 +2516,19 @@ pub async fn cross_search_files(
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| target.path.clone());
-            let sheet_name = target.sheet.clone().unwrap_or_default();
-
-            let db_path = if let Some(ref p) = target.cache_db_path {
-                let candidate = PathBuf::from(p);
-                if candidate.exists() {
-                    candidate
-                } else {
-                    db::cache_db_path(Path::new(&target.path), &sheet_name)
-                        .unwrap_or_else(|_| PathBuf::from(p))
-                }
-            } else {
-                match db::cache_db_path(Path::new(&target.path), &sheet_name) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        results.push(CrossFileSearchResult {
-                            path: target.path,
-                            sheet: sheet_name,
-                            file_name,
-                            total_rows: 0,
-                            match_count: 0,
-                            snippets: Vec::new(),
-                            error: Some(format!("Could not determine cache path: {e}")),
-                        });
-                        continue;
-                    }
+            let (sheet_name, db_path) = match target.ensure_cached_db() {
+                Ok(pair) => pair,
+                Err(e) => {
+                    results.push(CrossFileSearchResult {
+                        path: target.path,
+                        sheet: target.sheet.unwrap_or_default(),
+                        file_name,
+                        total_rows: 0,
+                        match_count: 0,
+                        snippets: Vec::new(),
+                        error: Some(format!("Could not determine cache path: {e}")),
+                    });
+                    continue;
                 }
             };
 
@@ -2598,20 +2691,9 @@ pub async fn cross_search_batch_files(
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| target.path.clone());
-            let sheet_name = target.sheet.clone().unwrap_or_default();
-            let db_path = if let Some(ref p) = target.cache_db_path {
-                let candidate = PathBuf::from(p);
-                if candidate.exists() {
-                    candidate
-                } else {
-                    db::cache_db_path(Path::new(&target.path), &sheet_name)
-                        .unwrap_or_else(|_| PathBuf::from(p))
-                }
-            } else {
-                match db::cache_db_path(Path::new(&target.path), &sheet_name) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                }
+            let (sheet_name, db_path) = match target.ensure_cached_db() {
+                Ok(pair) => pair,
+                Err(_) => continue,
             };
 
             if db_path.exists() {
@@ -3208,32 +3290,20 @@ where
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| target.path.clone());
-        let sheet_name = target.sheet.clone().unwrap_or_default();
-
-        let db_path = if let Some(ref p) = target.cache_db_path {
-            let candidate = PathBuf::from(p);
-            if candidate.exists() {
-                candidate
-            } else {
-                db::cache_db_path(Path::new(&target.path), &sheet_name)
-                    .unwrap_or_else(|_| PathBuf::from(p))
-            }
-        } else {
-            match db::cache_db_path(Path::new(&target.path), &sheet_name) {
-                Ok(p) => p,
-                Err(e) => {
-                    file_breakdowns.push(FileIntelBreakdown {
-                        file_name,
-                        path: target.path,
-                        sheet: target.sheet,
-                        rows_scanned: 0,
-                        match_count: 0,
-                        matched_rows: 0,
-                        top_tactics: Vec::new(),
-                        error: Some(e.to_string()),
-                    });
-                    continue;
-                }
+        let (_sheet_name, db_path) = match target.ensure_cached_db() {
+            Ok(pair) => pair,
+            Err(e) => {
+                file_breakdowns.push(FileIntelBreakdown {
+                    file_name,
+                    path: target.path,
+                    sheet: target.sheet,
+                    rows_scanned: 0,
+                    match_count: 0,
+                    matched_rows: 0,
+                    top_tactics: Vec::new(),
+                    error: Some(e.to_string()),
+                });
+                continue;
             }
         };
 
@@ -3493,20 +3563,9 @@ pub async fn get_row_raw_details(
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| target.path.clone());
-        let sheet_name = target.sheet.clone().unwrap_or_default();
-
-        let db_path = if let Some(ref p) = target.cache_db_path {
-            let candidate = PathBuf::from(p);
-            if candidate.exists() {
-                candidate
-            } else {
-                db::cache_db_path(Path::new(&target.path), &sheet_name)
-                    .unwrap_or_else(|_| PathBuf::from(p))
-            }
-        } else {
-            db::cache_db_path(Path::new(&target.path), &sheet_name)
-                .map_err(|e| format!("Could not determine cache path: {e}"))?
-        };
+        let (_sheet_name, db_path) = target
+            .ensure_cached_db()
+            .map_err(|e| format!("Could not determine cache path: {e}"))?;
 
         if !db_path.exists() {
             return Err(format!("Cache DB not found at {}", db_path.display()));

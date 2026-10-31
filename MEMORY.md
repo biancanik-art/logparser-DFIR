@@ -1,9 +1,9 @@
 # `logparser-DFIR` — Project State & Memory File
 
-**Last Updated:** 2026-10-28 01:42 UTC  
+**Last Updated:** 2026-10-31 21:32 UTC  
 **Repository Path:** `C:\users\xt\logparser-DFIR`  
-**Current Version:** `v0.4.0`  
-**Active Branch:** `master` (Clean working tree, 2 commits ahead of remote origin)
+**Current Version:** `v0.4.1`  
+**Active Branch:** `master`
 
 ---
 
@@ -24,16 +24,16 @@
 
 ---
 
-## 3. UI Architecture & Core Workflows (v0.4.0)
+## 3. UI Architecture & Core Workflows (v0.4.1)
 
-The bloated, heavy multi-tab interface (including the slow local 3B chatbot) was stripped down into **3 clean, purpose-built tabs**:
+The workbench provides **5 purpose-built tabs** with **Evidence Grid** first and active by default:
 
 ```
-┌────────────────────────────────────────────────────────────────────────────────────────┐
-│  [Open Folder]  [Open File]  [Active: All (7 files)]       [⌨ Shortcuts] [⚙ Settings]  │
-├────────────────────────────────────────────────────────────────────────────────────────┤
-│  [ 🔍 Extracted IOCs (Multi-File) ]   [ 🎯 Targeted Hunt & Master Timeline ]   [ 📋 Evidence Grid ]
-└────────────────────────────────────────────────────────────────────────────────────────┘
+┌────────────────────────────────────────────────────────────────────────────────────────────────────────────────┐
+│  [Open File] [Open Folder] [Active: All (7 files)]                                     [⌨ Shortcuts] [⚙ Settings] │
+├────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│  [ 📊 Evidence Grid ]  [ 🎯 Targeted Hunt & Master Timeline ]  [ 🛡️ Extracted IOCs ]  [ ⚡ Threat Enrichment ]  [ ⚙️ Data Mapping & Rules ] │
+└────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Tab 1: Extracted IOCs (Multi-File) (`tab-iocs`)
@@ -114,7 +114,20 @@ The bloated, heavy multi-tab interface (including the slow local 3B chatbot) was
 
 ---
 
-## 7. Next Actions for Next Session
-1. Test targeted hunting and timeline generation with real-world multi-file cases.
-2. Optional: Add offline regex-based Base64/PowerShell decoding fallback for environments where no Gemini API key is available.
-3. Push commits `21f2e0a` and `e08ab2b` to remote repository when ready (`git push origin master`).
+## 7. v0.4.1 Fixes & Enhancements (Ingest, FTS5, Multi-File Correlation & Offline DFIR)
+1. **Frontend Initialization & Folder Ingest (`frontend/app.js`, `frontend/index.html`)**:
+   - Fixed fatal `SyntaxError`s and IIFE scope leak introduced in `e08ab2b` (lines 9465–10104) where template literals had stripped quotes/backticks and code was appended outside the main IIFE `})();`.
+   - Fixed `pickAndOpenFolder()` to register `activeSourceLoad` before calling `loadSheet()` so opening a folder immediately loads the primary evidence file while queuing all remaining files.
+   - Restored null guards on removed legacy DOM elements and added the collapsible **Evidence Workspace Files** status bar (`#correlation-files-list`) inside `tab-correlation`.
+2. **Backend Universal Ingest & Full-Text Search (`src-tauri/src/universal_import.rs`, `csv_import.rs`, `tabular_import.rs`, `db.rs`)**:
+   - Fixed `ColumnSource` mapping in `insert_batch` so nested/punctuated JSON and EVTX fields (`properties.userAgent`, `@timestamp`, `Event.System.EventID`) map by original key instead of sanitized SQL column name (previously imported as `NULL`).
+   - Added `db::populate_fts(&conn, &columns)` to `import_stream_into_db` so `rows_fts` is populated for JSON, JSONL, `.gz`, EVTX, and Syslog files.
+   - Bumped cache version to `"cache-v2"` in `db::cache_key` to automatically invalidate stale pre-fix `.sqlite3` caches.
+   - Added true TSV (`\t`) delimited import, lossy UTF-8 + BOM stripping for CSV/TSV/line streams, `MultiGzDecoder` for multi-member `.gz` archives, streaming EVTX ingestion via bounded channel, `.log.gz` / rotated log (`auth.log.1`, `syslog.2`) support, and JSONL fallback for `.json` files.
+3. **On-Demand Cache Resolution & Time-Window Hunting (`src-tauri/src/commands.rs`, `intel/analyst.rs`)**:
+   - Added `FileTarget::ensure_cached_db()` so multi-file commands (`cross_search_files`, `cross_search_batch_files`, `cross_ioc_overlap`, `extract_unified_events_for_indicators`, `get_row_raw_details`) automatically resolve default sheet names and build `.sqlite3` caches on the fly.
+   - Enabled time-window-only Master Timeline hunts and zero-friction full Master Timeline generation across all loaded files even when the IOC hunting textarea is empty.
+4. **Offline Deobfuscator, Offline Incident Narrative & Single-File Drawer (`frontend/app.js`)**:
+   - Added deterministic **Offline Forensic Deobfuscator** (`offlineDeobfuscatePayload`) for PowerShell `-EncodedCommand` (UTF-16LE Base64), standard Base64, URL encoding, and backtick/caret obfuscation with automatic MITRE ATT&CK mapping and IOC extraction.
+   - Added **Offline Incident Narrative** (`generateOfflineIncidentNarrative`) so `[ ✨ Generate Narrative ]` works 100% offline without a Gemini API key (and combines with Gemini AI when configured).
+   - Enabled the Slide-Over Row Detail & Deobfuscation Drawer (`openUnifiedRowDetailDrawer`) and Date/Time range filter across both single-file Evidence Grid mode and Unified Master Timeline mode.

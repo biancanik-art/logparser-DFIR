@@ -135,6 +135,7 @@ fn cache_key(path: &Path, sheet: &str) -> Result<String> {
         .unwrap_or(0);
 
     let mut hasher = DefaultHasher::new();
+    "cache-v2".hash(&mut hasher);
     canonical.hash(&mut hasher);
     metadata.len().hash(&mut hasher);
     modified_nanos.hash(&mut hasher);

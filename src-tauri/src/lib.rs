@@ -12,9 +12,12 @@ pub mod tabular_import;
 pub mod universal_export;
 pub mod universal_import;
 
+#[cfg(not(test))]
 use commands::AppState;
+#[cfg(not(test))]
 use tauri::{path::BaseDirectory, Manager};
 
+#[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
