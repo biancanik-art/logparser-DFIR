@@ -13,9 +13,49 @@ use serde::Serialize;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::net::{IpAddr, Ipv4Addr};
 
+#[allow(dead_code)]
 const SCAN_BATCH_ROWS: i64 = 1000;
 const PROGRESS_INTERVAL_ROWS: i64 = 5000;
 const MAX_IOCS_PER_TYPE: usize = 10_000;
+
+struct ColScanMeta<'a> {
+    sql_name: &'a str,
+    is_ip_column: bool,
+    is_user_agent_column: bool,
+    is_ua_like: bool,
+    is_json_col: bool,
+    correlation_kind: Option<&'static str>,
+}
+
+#[inline]
+fn is_timestamp_or_numeric_literal(cell: &str) -> bool {
+    let b = cell.as_bytes();
+    if b.is_empty() || b.len() > 40 {
+        return false;
+    }
+    if b.len() < 32 && b.iter().all(|&c| c.is_ascii_digit() || c == b'-') {
+        return true;
+    }
+    if b.len() >= 10
+        && b[0].is_ascii_digit()
+        && b[1].is_ascii_digit()
+        && b[2].is_ascii_digit()
+        && b[3].is_ascii_digit()
+        && (b[4] == b'-' || b[4] == b'/')
+        && b[5].is_ascii_digit()
+        && b[6].is_ascii_digit()
+        && (b[7] == b'-' || b[7] == b'/')
+        && b[8].is_ascii_digit()
+        && b[9].is_ascii_digit()
+        && b.iter().all(|&c| {
+            c.is_ascii_digit()
+                || matches!(c, b'-' | b'/' | b':' | b' ' | b'.' | b'T' | b'Z' | b'+' | b',')
+        })
+    {
+        return true;
+    }
+    false
+}
 
 /// Summary of all extracted IOCs from the dataset.
 #[derive(Debug, Clone, Serialize)]
@@ -210,15 +250,25 @@ pub fn extract_iocs(
 
     // Scan all text columns for IOCs.
     let text_columns: Vec<&ColumnMeta> = columns.iter().collect();
+    if text_columns.is_empty() {
+        on_progress(0, 0, "complete");
+        return Ok(IocExtractionSummary {
+            rows_scanned: 0,
+            ip_indicators: Vec::new(),
+            domain_indicators: Vec::new(),
+            url_indicators: Vec::new(),
+            email_indicators: Vec::new(),
+            user_agent_indicators: Vec::new(),
+            correlation_indicators: Vec::new(),
+        });
+    }
+
     let select_idents: Vec<String> = text_columns
         .iter()
         .map(|column| db::quote_ident(&column.sql_name))
         .collect();
     let select_sql = format!(
-        "SELECT row_num, {} FROM rows
-         WHERE row_num > ?1
-         ORDER BY row_num ASC
-         LIMIT ?2",
+        "SELECT row_num, {} FROM rows ORDER BY row_num ASC",
         select_idents.join(", ")
     );
 
@@ -229,222 +279,238 @@ pub fn extract_iocs(
     let mut user_agents: HashMap<String, SimpleAccumulator> = HashMap::new();
     let mut correlation_acc: HashMap<(String, String), (i64, i64, Option<String>)> = HashMap::new();
 
-    let mut correlation_cols: HashMap<String, &'static str> = HashMap::new();
-    let mut json_cols: HashSet<String> = HashSet::new();
+    // Precompute column scan flags once outside the row/cell loop.
+    let col_scan_meta: Vec<ColScanMeta> = text_columns
+        .iter()
+        .map(|col| {
+            let sql_name = col.sql_name.as_str();
+            let is_ip_column = role_columns.ip_columns.contains(sql_name);
+            let is_user_agent_column = role_columns.user_agent_columns.contains(sql_name);
+            let col_lower = sql_name.to_ascii_lowercase();
+            let is_ua_like = is_user_agent_column
+                || col_lower.contains("useragent")
+                || col_lower.contains("user_agent")
+                || col_lower.contains("user-agent")
+                || col_lower.contains("http_user_agent")
+                || col_lower.contains("caller_agent")
+                || col_lower.contains("request_agent")
+                || col_lower.contains("http_agent")
+                || col_lower.contains("client_app")
+                || col_lower == "ua"
+                || col_lower.ends_with("_ua")
+                || col_lower.starts_with("ua_");
+            let is_json_col =
+                is_json_payload_column(sql_name) || is_json_payload_column(&col.original_name);
+            let correlation_kind = classify_correlation_column(&col.original_name)
+                .or_else(|| classify_correlation_column(sql_name));
 
-    for col in columns {
-        if is_json_payload_column(&col.sql_name) || is_json_payload_column(&col.original_name) {
-            json_cols.insert(col.sql_name.clone());
-        }
-        if let Some(kind) = classify_correlation_column(&col.original_name)
-            .or_else(|| classify_correlation_column(&col.sql_name))
-        {
-            correlation_cols.insert(col.sql_name.clone(), kind);
-        }
-    }
+            ColScanMeta {
+                sql_name,
+                is_ip_column,
+                is_user_agent_column,
+                is_ua_like,
+                is_json_col,
+                correlation_kind,
+            }
+        })
+        .collect();
 
     let mut rows_scanned = 0i64;
-    let mut last_row_num = i64::MIN;
     let mut next_progress_at = PROGRESS_INTERVAL_ROWS;
 
     on_progress(0, total_rows, "extracting IOCs");
 
-    loop {
-        let batch = {
-            let mut stmt = conn.prepare(&select_sql)?;
-            let mut rows = stmt.query(rusqlite::params![last_row_num, SCAN_BATCH_ROWS])?;
-            let mut batch = Vec::new();
-            while let Some(row) = rows.next()? {
-                let row_num: i64 = row.get(0)?;
-                let mut values = Vec::with_capacity(text_columns.len());
-                for column_idx in 0..text_columns.len() {
-                    values.push(row.get::<_, Option<String>>(column_idx + 1)?);
-                }
-                batch.push((row_num, values));
+    let mut stmt = conn.prepare(&select_sql)?;
+    let mut rows = stmt.query([])?;
+
+    while let Some(row) = rows.next()? {
+        let row_num: i64 = row.get(0)?;
+        rows_scanned += 1;
+
+        for (column_idx, col_meta) in col_scan_meta.iter().enumerate() {
+            let cell = match row.get_ref(column_idx + 1)? {
+                rusqlite::types::ValueRef::Text(bytes) => match std::str::from_utf8(bytes) {
+                    Ok(s) => s.trim(),
+                    Err(_) => continue,
+                },
+                _ => continue,
+            };
+            if cell.is_empty() {
+                continue;
             }
-            batch
-        };
 
-        if batch.is_empty() {
-            break;
-        }
+            // Fast skip for pure timestamps (YYYY-MM-DD...) and pure integers in non-correlation columns.
+            if col_meta.correlation_kind.is_none() && is_timestamp_or_numeric_literal(cell) {
+                continue;
+            }
 
-        for (row_num, values) in &batch {
-            last_row_num = *row_num;
-            rows_scanned += 1;
+            let col_name = col_meta.sql_name;
+            let bytes = cell.as_bytes();
+            let has_dot = bytes.contains(&b'.');
+            let has_at = bytes.contains(&b'@');
 
-            for (column_idx, value) in values.iter().enumerate() {
-                let Some(cell) = value.as_deref().map(str::trim).filter(|c| !c.is_empty()) else {
-                    continue;
-                };
-                let col_name = &text_columns[column_idx].sql_name;
-                let is_ip_column = role_columns.ip_columns.contains(col_name);
-                let is_user_agent_column = role_columns.user_agent_columns.contains(col_name);
-                let col_lower = col_name.to_ascii_lowercase();
-                let is_ua_like = is_user_agent_column
-                    || col_lower.contains("useragent")
-                    || col_lower.contains("user_agent")
-                    || col_lower.contains("user-agent")
-                    || col_lower.contains("http_user_agent")
-                    || col_lower.contains("caller_agent")
-                    || col_lower.contains("request_agent")
-                    || col_lower.contains("http_agent")
-                    || col_lower.contains("client_app")
-                    || col_lower == "ua"
-                    || col_lower.ends_with("_ua")
-                    || col_lower.starts_with("ua_");
-
-                // IP extraction — prioritize dedicated IP columns but also scan text (excluding user agents).
-                if is_ip_column {
-                    // The whole cell is likely an IP address.
-                    let trimmed = cell.trim();
-                    if trimmed.parse::<IpAddr>().is_ok() && ips.len() < MAX_IOCS_PER_TYPE {
-                        let entry = ips.entry(trimmed.to_string()).or_insert_with(|| {
-                            IpAccumulator {
-                                first_row: *row_num,
-                                count: 0,
-                                columns: BTreeSet::new(),
-                            }
-                        });
-                        entry.count += 1;
-                        entry.columns.insert(col_name.clone());
-                    }
-                } else if !is_ua_like && !cell.contains("Mozilla/") {
-                    // Scan for embedded IPs in text fields.
-                    for ip in extract_ipv4_addresses(cell) {
-                        if ips.len() >= MAX_IOCS_PER_TYPE {
-                            break;
-                        }
-                        let entry = ips.entry(ip).or_insert_with(|| IpAccumulator {
-                            first_row: *row_num,
-                            count: 0,
-                            columns: BTreeSet::new(),
-                        });
-                        entry.count += 1;
-                        entry.columns.insert(col_name.clone());
-                    }
+            // IP extraction — prioritize dedicated IP columns but also scan text (excluding user agents).
+            if col_meta.is_ip_column {
+                if cell.parse::<IpAddr>().is_ok() && ips.len() < MAX_IOCS_PER_TYPE {
+                    let entry = ips.entry(cell.to_string()).or_insert_with(|| IpAccumulator {
+                        first_row: row_num,
+                        count: 0,
+                        columns: BTreeSet::new(),
+                    });
+                    entry.count += 1;
+                    entry.columns.insert(col_name.to_string());
                 }
+            } else if has_dot && !col_meta.is_ua_like && !cell.contains("Mozilla/") {
+                // Scan for embedded IPs in text fields that contain at least one dot.
+                for ip in extract_ipv4_addresses(cell) {
+                    if ips.len() >= MAX_IOCS_PER_TYPE {
+                        break;
+                    }
+                    let entry = ips.entry(ip).or_insert_with(|| IpAccumulator {
+                        first_row: row_num,
+                        count: 0,
+                        columns: BTreeSet::new(),
+                    });
+                    entry.count += 1;
+                    entry.columns.insert(col_name.to_string());
+                }
+            }
 
-                // User agent extraction — from dedicated columns or cells containing known tool/browser signatures.
-                if (is_user_agent_column || is_ua_like) && user_agents.len() < MAX_IOCS_PER_TYPE {
-                    for ua in extract_user_agents_from_cell(cell) {
+            // User agent extraction — from dedicated columns or cells containing known tool/browser signatures.
+            if (col_meta.is_user_agent_column || col_meta.is_ua_like)
+                && user_agents.len() < MAX_IOCS_PER_TYPE
+            {
+                for ua in extract_user_agents_from_cell(cell) {
+                    if user_agents.len() >= MAX_IOCS_PER_TYPE {
+                        break;
+                    }
+                    user_agents
+                        .entry(ua.to_string())
+                        .and_modify(|a| a.increment())
+                        .or_insert_with(|| SimpleAccumulator::new(row_num));
+                }
+            } else if !col_meta.is_ip_column
+                && col_meta.correlation_kind.is_none()
+                && user_agents.len() < MAX_IOCS_PER_TYPE
+            {
+                for ua in extract_user_agents_from_cell(cell) {
+                    if crate::intel::roles::is_known_tool_or_browser_ua(ua) {
                         if user_agents.len() >= MAX_IOCS_PER_TYPE {
                             break;
                         }
                         user_agents
                             .entry(ua.to_string())
                             .and_modify(|a| a.increment())
-                            .or_insert_with(|| SimpleAccumulator::new(*row_num));
-                    }
-                } else if !is_user_agent_column && !is_ua_like && user_agents.len() < MAX_IOCS_PER_TYPE {
-                    for ua in extract_user_agents_from_cell(cell) {
-                        if crate::intel::roles::is_known_tool_or_browser_ua(ua) {
-                            if user_agents.len() >= MAX_IOCS_PER_TYPE {
-                                break;
-                            }
-                            user_agents
-                                .entry(ua.to_string())
-                                .and_modify(|a| a.increment())
-                                .or_insert_with(|| SimpleAccumulator::new(*row_num));
-                        }
+                            .or_insert_with(|| SimpleAccumulator::new(row_num));
                     }
                 }
+            }
 
-                // Email extraction — from any column. Also extract domain from email!
-                if emails.len() < MAX_IOCS_PER_TYPE {
-                    for email in extract_emails(cell) {
-                        if let Some((_, domain)) = email.split_once('@') {
-                            let d = domain.trim().to_lowercase();
-                            if is_valid_domain(&d) && domains.len() < MAX_IOCS_PER_TYPE {
-                                domains
-                                    .entry(d)
-                                    .and_modify(|a| a.increment())
-                                    .or_insert_with(|| SimpleAccumulator::new(*row_num));
-                            }
-                        }
-                        emails
-                            .entry(email)
-                            .and_modify(|a| a.increment())
-                            .or_insert_with(|| SimpleAccumulator::new(*row_num));
-                    }
-                }
-
-                // URL extraction — from any column.
-                if urls.len() < MAX_IOCS_PER_TYPE {
-                    for url in extract_urls(cell) {
-                        let domain = extract_domain_from_url(&url).unwrap_or_default();
-                        if !domain.is_empty() && is_valid_domain(&domain) && domains.len() < MAX_IOCS_PER_TYPE {
+            // Email extraction — requires both '@' and '.'. Also extract domain from email!
+            if has_at && has_dot && emails.len() < MAX_IOCS_PER_TYPE {
+                for email in extract_emails(cell) {
+                    if let Some((_, domain)) = email.split_once('@') {
+                        let d = domain.trim().to_lowercase();
+                        if is_valid_domain(&d) && domains.len() < MAX_IOCS_PER_TYPE {
                             domains
-                                .entry(domain.clone())
+                                .entry(d)
                                 .and_modify(|a| a.increment())
-                                .or_insert_with(|| SimpleAccumulator::new(*row_num));
+                                .or_insert_with(|| SimpleAccumulator::new(row_num));
                         }
-                        urls.entry(url)
-                            .and_modify(|a| a.increment())
-                            .or_insert_with(|| SimpleAccumulator::new(*row_num));
                     }
+                    emails
+                        .entry(email)
+                        .and_modify(|a| a.increment())
+                        .or_insert_with(|| SimpleAccumulator::new(row_num));
                 }
+            }
 
-                // Standalone domain extraction — from non-UA text columns.
-                if !is_ua_like && domains.len() < MAX_IOCS_PER_TYPE {
-                    for domain in extract_standalone_domains(cell) {
-                        if domains.len() >= MAX_IOCS_PER_TYPE {
-                            break;
-                        }
+            // URL extraction — requires '.' and '://'.
+            if has_dot
+                && bytes.len() >= 10
+                && cell.contains("://")
+                && urls.len() < MAX_IOCS_PER_TYPE
+            {
+                for url in extract_urls(cell) {
+                    let domain = extract_domain_from_url(&url).unwrap_or_default();
+                    if !domain.is_empty()
+                        && is_valid_domain(&domain)
+                        && domains.len() < MAX_IOCS_PER_TYPE
+                    {
                         domains
-                            .entry(domain)
+                            .entry(domain.clone())
                             .and_modify(|a| a.increment())
-                            .or_insert_with(|| SimpleAccumulator::new(*row_num));
+                            .or_insert_with(|| SimpleAccumulator::new(row_num));
                     }
+                    urls.entry(url)
+                        .and_modify(|a| a.increment())
+                        .or_insert_with(|| SimpleAccumulator::new(row_num));
                 }
+            }
 
-                // Correlation & Object ID extraction (DeviceID, SessionID, AppID, UniqueTokenID, CorrelationID/RequestID, MailboxGuid, MessageIDs, FileID, Hashes)
-                if json_cols.contains(col_name) || cell.starts_with('{') {
-                    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(cell) {
-                        let mut extracted = Vec::new();
-                        extract_correlation_from_json(&parsed, &mut extracted);
-                        for (kind, val) in extracted {
-                            if correlation_acc.len() < MAX_IOCS_PER_TYPE * 2 {
-                                let entry = correlation_acc
-                                    .entry((kind, val))
-                                    .or_insert((*row_num, 0, Some(col_name.clone())));
-                                entry.1 += 1;
-                            }
-                        }
+            // Standalone domain extraction — from non-UA, non-IP text columns that contain '.'.
+            if has_dot
+                && !col_meta.is_ua_like
+                && !col_meta.is_ip_column
+                && domains.len() < MAX_IOCS_PER_TYPE
+            {
+                for domain in extract_standalone_domains(cell) {
+                    if domains.len() >= MAX_IOCS_PER_TYPE {
+                        break;
                     }
+                    domains
+                        .entry(domain)
+                        .and_modify(|a| a.increment())
+                        .or_insert_with(|| SimpleAccumulator::new(row_num));
                 }
+            }
 
-                if let Some(&kind) = correlation_cols.get(col_name) {
-                    if kind == "hash" {
-                        for h in extract_hashes_from_text(cell) {
-                            if correlation_acc.len() < MAX_IOCS_PER_TYPE * 2 {
-                                let entry = correlation_acc
-                                    .entry(("hash".to_string(), h))
-                                    .or_insert((*row_num, 0, Some(col_name.clone())));
-                                entry.1 += 1;
-                            }
-                        }
-                    } else if is_valid_correlation_value(kind, cell) {
+            // Correlation & Object ID extraction (DeviceID, SessionID, AppID, UniqueTokenID, CorrelationID/RequestID, MailboxGuid, MessageIDs, FileID, Hashes)
+            if col_meta.is_json_col || cell.starts_with('{') {
+                if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(cell) {
+                    let mut extracted = Vec::new();
+                    extract_correlation_from_json(&parsed, &mut extracted);
+                    for (kind, val) in extracted {
                         if correlation_acc.len() < MAX_IOCS_PER_TYPE * 2 {
                             let entry = correlation_acc
-                                .entry((kind.to_string(), cell.trim().to_string()))
-                                .or_insert((*row_num, 0, Some(col_name.clone())));
+                                .entry((kind, val))
+                                .or_insert_with(|| (row_num, 0, Some(col_name.to_string())));
                             entry.1 += 1;
                         }
                     }
-                } else if cell.len() >= 32
-                    && (cell.contains("MD5=")
-                        || cell.contains("SHA256=")
-                        || cell.contains("SHA1=")
-                        || cell.len() == 64)
-                {
+                }
+            }
+
+            if let Some(kind) = col_meta.correlation_kind {
+                if kind == "hash" {
                     for h in extract_hashes_from_text(cell) {
                         if correlation_acc.len() < MAX_IOCS_PER_TYPE * 2 {
                             let entry = correlation_acc
                                 .entry(("hash".to_string(), h))
-                                .or_insert((*row_num, 0, Some(col_name.clone())));
+                                .or_insert_with(|| (row_num, 0, Some(col_name.to_string())));
                             entry.1 += 1;
                         }
+                    }
+                } else if is_valid_correlation_value(kind, cell) {
+                    if correlation_acc.len() < MAX_IOCS_PER_TYPE * 2 {
+                        let entry = correlation_acc
+                            .entry((kind.to_string(), cell.to_string()))
+                            .or_insert_with(|| (row_num, 0, Some(col_name.to_string())));
+                        entry.1 += 1;
+                    }
+                }
+            } else if cell.len() >= 32
+                && (cell.contains("MD5=")
+                    || cell.contains("SHA256=")
+                    || cell.contains("SHA1=")
+                    || cell.len() == 64)
+            {
+                for h in extract_hashes_from_text(cell) {
+                    if correlation_acc.len() < MAX_IOCS_PER_TYPE * 2 {
+                        let entry = correlation_acc
+                            .entry(("hash".to_string(), h))
+                            .or_insert_with(|| (row_num, 0, Some(col_name.to_string())));
+                        entry.1 += 1;
                     }
                 }
             }

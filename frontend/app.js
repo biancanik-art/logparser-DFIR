@@ -206,6 +206,9 @@
   let hiddenRowNums = new Set();
   let selectedColFields = new Set();
   let hiddenColFields = new Set();
+  let singleFileInlineFilters = new Map();
+  let unifiedInlineFilters = new Map();
+  let activeFocusedInlineFilter = null;
 
   // Multi-file tracking
   let loadedFiles = []; // array of { path, sheet, name, rowCount, columns, summary }
@@ -1223,6 +1226,8 @@
     searchBox.value = "";
     spec.filters = [];
     filterList.innerHTML = "";
+    singleFileInlineFilters.clear();
+    syncInlineFilterInputsWithState();
     spec.sort = null;
     if (sortColumn) sortColumn.value = "";
     if (sortDirection) sortDirection.value = "asc";
@@ -1454,8 +1459,16 @@
     const term = (searchBox ? searchBox.value : "").trim().toLowerCase();
     const hasTextFilter = Boolean(term);
     const hasTimeFilter = Boolean(activeTimeFilter && (activeTimeFilter.fromEpoch || activeTimeFilter.toEpoch));
+    const activeColFilters = [];
+    for (const [colField, entry] of unifiedInlineFilters.entries()) {
+      const resolved = resolveInlineFilterEntry(entry);
+      if (resolved) {
+        activeColFilters.push({ field: colField, op: resolved.op, value: resolved.value });
+      }
+    }
+    const hasColFilters = activeColFilters.length > 0;
 
-    if (!hasTextFilter && !hasTimeFilter) {
+    if (!hasTextFilter && !hasTimeFilter && !hasColFilters) {
       table.clearFilter();
       if (rowCountLabel && unifiedCorrelatedRows) {
         const uniqueFiles = new Set(unifiedCorrelatedRows.map((e) => e.fileName || "File"));
@@ -1483,7 +1496,16 @@
         }
       }
 
-      // 2. Text Search
+      // 2. Per-Column Inline Filters (Timeline Explorer style)
+      if (hasColFilters) {
+        for (const cf of activeColFilters) {
+          if (!matchesInlineColumnFilter(data[cf.field], cf.op, cf.value)) {
+            return false;
+          }
+        }
+      }
+
+      // 3. Text Search
       if (hasTextFilter) {
         const matches = Object.values(data).some((val) => {
           if (val === null || val === undefined) return false;
@@ -1507,6 +1529,9 @@
         if (hasTimeFilter) {
           filterParts.push(`Time: ${activeTimeFilter.fromText || "Start"} → ${activeTimeFilter.toText || "End"}`);
         }
+        if (hasColFilters) {
+          filterParts.push(`${activeColFilters.length} column filter(s)`);
+        }
         if (hasTextFilter) {
           filterParts.push(`"${term}"`);
         }
@@ -1524,6 +1549,7 @@
     isUnifiedCorrelatedMode = true;
     unifiedCorrelatedRows = events;
     unifiedCorrelatedLabel = label || "Cross-File Unified Correlation";
+    unifiedInlineFilters.clear();
 
     const resolvedIndex = targetScrollIndex || (savedUnifiedContext ? savedUnifiedContext.jumpedIndex : null);
     savedUnifiedContext = {
@@ -1647,10 +1673,17 @@
       {
         title: "📄 Source File",
         field: "fileName",
-        width: 175,
-        minWidth: 130,
+        width: 185,
+        minWidth: 145,
         headerSort: true,
         visible: !hiddenColFields.has("fileName"),
+        titleFormatter() {
+          return createColumnHeaderWithInlineFilter({
+            titleText: "📄 Source File",
+            field: "fileName",
+            isUnified: true,
+          });
+        },
         headerClick(e, col) {
           if (e && (e.ctrlKey || e.metaKey)) {
             toggleColumnSelection(col.getField());
@@ -1677,10 +1710,17 @@
       {
         title: "🕒 Timestamp (UTC)",
         field: "utcText",
-        width: 190,
-        minWidth: 150,
+        width: 195,
+        minWidth: 155,
         headerSort: true,
         visible: !hiddenColFields.has("utcText"),
+        titleFormatter() {
+          return createColumnHeaderWithInlineFilter({
+            titleText: "🕒 Timestamp (UTC)",
+            field: "utcText",
+            isUnified: true,
+          });
+        },
         headerClick(e, col) {
           if (e && (e.ctrlKey || e.metaKey)) {
             toggleColumnSelection(col.getField());
@@ -1708,6 +1748,13 @@
         minWidth: 170,
         headerSort: false,
         visible: !hiddenColFields.has("mitreTags"),
+        titleFormatter() {
+          return createColumnHeaderWithInlineFilter({
+            titleText: "🛡️ MITRE / Tags",
+            field: "mitreTags",
+            isUnified: true,
+          });
+        },
         headerClick(e, col) {
           if (e && (e.ctrlKey || e.metaKey)) {
             toggleColumnSelection(col.getField());
@@ -1734,9 +1781,16 @@
           field: colName,
           resizable: true,
           headerSort: true,
-          minWidth: 140,
-          width: 180,
+          minWidth: 145,
+          width: 185,
           visible: !hiddenColFields.has(colName),
+          titleFormatter() {
+            return createColumnHeaderWithInlineFilter({
+              titleText: colName,
+              field: colName,
+              isUnified: true,
+            });
+          },
           headerClick(e, col) {
             if (e && (e.ctrlKey || e.metaKey)) {
               toggleColumnSelection(col.getField());
@@ -1760,10 +1814,17 @@
         {
           title: "👤 User / Identity",
           field: "user",
-          width: 180,
-          minWidth: 130,
+          width: 185,
+          minWidth: 145,
           headerSort: true,
           visible: !hiddenColFields.has("user"),
+          titleFormatter() {
+            return createColumnHeaderWithInlineFilter({
+              titleText: "👤 User / Identity",
+              field: "user",
+              isUnified: true,
+            });
+          },
           headerClick(e, col) {
             if (e && (e.ctrlKey || e.metaKey)) {
               toggleColumnSelection(col.getField());
@@ -1781,10 +1842,17 @@
         {
           title: "💻 Host / IP",
           field: "host",
-          width: 160,
-          minWidth: 120,
+          width: 175,
+          minWidth: 145,
           headerSort: true,
           visible: !hiddenColFields.has("host"),
+          titleFormatter() {
+            return createColumnHeaderWithInlineFilter({
+              titleText: "💻 Host / IP",
+              field: "host",
+              isUnified: true,
+            });
+          },
           headerClick(e, col) {
             if (e && (e.ctrlKey || e.metaKey)) {
               toggleColumnSelection(col.getField());
@@ -1805,6 +1873,13 @@
           minWidth: 260,
           headerSort: true,
           visible: !hiddenColFields.has("action"),
+          titleFormatter() {
+            return createColumnHeaderWithInlineFilter({
+              titleText: "⚡ Operation / Action",
+              field: "action",
+              isUnified: true,
+            });
+          },
           headerClick(e, col) {
             if (e && (e.ctrlKey || e.metaKey)) {
               toggleColumnSelection(col.getField());
@@ -1825,6 +1900,13 @@
           minWidth: 280,
           headerSort: true,
           visible: !hiddenColFields.has("details"),
+          titleFormatter() {
+            return createColumnHeaderWithInlineFilter({
+              titleText: "📋 Details / Parameters",
+              field: "details",
+              isUnified: true,
+            });
+          },
           headerClick(e, col) {
             if (e && (e.ctrlKey || e.metaKey)) {
               toggleColumnSelection(col.getField());
@@ -1861,6 +1943,9 @@
       if (resolvedIndex) {
         scrollToUnifiedIndex(resolvedIndex);
       }
+    });
+    table.on("renderComplete", () => {
+      restoreInlineFilterFocusIfNeeded();
     });
 
     table.on("rowDblClick", (e, row) => {
@@ -3468,6 +3553,342 @@
     timezonePanel.classList.remove("hidden");
   }
 
+  const INLINE_FILTER_OP_OPTIONS = [
+    { value: "contains", symbol: "∋", label: "∋ Contains (or prefix: !not, =exact, !=, ^start, $end)" },
+    { value: "notContains", symbol: "!∋", label: "!∋ !Contains (Does NOT contain)" },
+    { value: "equals", symbol: "=", label: "= Equals" },
+    { value: "notEquals", symbol: "≠", label: "≠ Not equals (!=)" },
+    { value: "startsWith", symbol: "^", label: "^ Starts with" },
+    { value: "endsWith", symbol: "$", label: "$ Ends with" },
+    { value: "greaterThan", symbol: ">", label: "> Greater than" },
+    { value: "lessThan", symbol: "<", label: "< Less than" },
+    { value: "isEmpty", symbol: "∅", label: "∅ Is empty" },
+    { value: "isNotEmpty", symbol: "!∅", label: "!∅ Is NOT empty" },
+  ];
+
+  function resolveInlineFilterEntry(entry) {
+    if (!entry || typeof entry !== "object") return null;
+    const op = entry.op || "contains";
+    if (op === "isEmpty" || op === "isNotEmpty") {
+      return { op, value: "" };
+    }
+    const trimmed = String(entry.rawValue ?? "").trim();
+    if (!trimmed) return null;
+
+    if (op === "contains") {
+      if (trimmed.startsWith("!=")) {
+        const rest = trimmed.slice(2).trim();
+        if (rest) return { op: "notEquals", value: rest };
+      } else if (trimmed.startsWith("!")) {
+        const rest = trimmed.slice(1).trim();
+        if (rest) return { op: "notContains", value: rest };
+      } else if (trimmed.startsWith("=")) {
+        const rest = trimmed.slice(1).trim();
+        if (rest) return { op: "equals", value: rest };
+      } else if (trimmed.startsWith("^")) {
+        const rest = trimmed.slice(1).trim();
+        if (rest) return { op: "startsWith", value: rest };
+      } else if (trimmed.startsWith("$")) {
+        const rest = trimmed.slice(1).trim();
+        if (rest) return { op: "endsWith", value: rest };
+      } else if (trimmed.startsWith(">")) {
+        const rest = trimmed.slice(1).trim();
+        if (rest) return { op: "greaterThan", value: rest };
+      } else if (trimmed.startsWith("<")) {
+        const rest = trimmed.slice(1).trim();
+        if (rest) return { op: "lessThan", value: rest };
+      }
+    }
+    return { op, value: trimmed };
+  }
+
+  function matchesInlineColumnFilter(rawCellVal, op, filterVal) {
+    let cellStr = "";
+    if (rawCellVal === null || rawCellVal === undefined || rawCellVal === "—") {
+      cellStr = "";
+    } else if (Array.isArray(rawCellVal)) {
+      cellStr = rawCellVal.join(" ");
+    } else if (typeof rawCellVal === "object") {
+      cellStr = JSON.stringify(rawCellVal);
+    } else {
+      cellStr = String(rawCellVal);
+    }
+
+    const trimmedCell = cellStr.trim();
+    if (op === "isEmpty") return trimmedCell.length === 0;
+    if (op === "isNotEmpty") return trimmedCell.length > 0;
+
+    const cellLower = cellStr.toLowerCase();
+    const targetLower = String(filterVal ?? "").toLowerCase();
+
+    switch (op) {
+      case "contains":
+        return cellLower.includes(targetLower);
+      case "notContains":
+        return !cellLower.includes(targetLower);
+      case "equals":
+        return trimmedCell.toLowerCase() === targetLower;
+      case "notEquals":
+        return trimmedCell.toLowerCase() !== targetLower;
+      case "startsWith":
+        return trimmedCell.toLowerCase().startsWith(targetLower);
+      case "endsWith":
+        return trimmedCell.toLowerCase().endsWith(targetLower);
+      case "greaterThan": {
+        const numCell = Number(trimmedCell);
+        const numTarget = Number(filterVal);
+        if (!Number.isNaN(numCell) && !Number.isNaN(numTarget) && trimmedCell !== "" && String(filterVal).trim() !== "") {
+          return numCell > numTarget;
+        }
+        return trimmedCell.toLowerCase() > targetLower;
+      }
+      case "lessThan": {
+        const numCell = Number(trimmedCell);
+        const numTarget = Number(filterVal);
+        if (!Number.isNaN(numCell) && !Number.isNaN(numTarget) && trimmedCell !== "" && String(filterVal).trim() !== "") {
+          return numCell < numTarget;
+        }
+        return trimmedCell.toLowerCase() < targetLower;
+      }
+      default:
+        return cellLower.includes(targetLower);
+    }
+  }
+
+  function syncInlineFilterInputsWithState() {
+    if (typeof document.querySelectorAll !== "function") return;
+    const store = isUnifiedCorrelatedMode ? unifiedInlineFilters : singleFileInlineFilters;
+    document.querySelectorAll(".col-inline-filter-row").forEach((rowEl) => {
+      const field = rowEl.dataset ? rowEl.dataset.field : null;
+      if (!field) return;
+      const entry = store.get(field) || { op: "contains", rawValue: "" };
+      const opSelect = rowEl.querySelector(".col-inline-filter-op");
+      const inputEl = rowEl.querySelector(".col-inline-filter-input");
+      if (opSelect && opSelect.value !== entry.op) {
+        opSelect.value = entry.op;
+      }
+      const isNoValOp = entry.op === "isEmpty" || entry.op === "isNotEmpty";
+      if (inputEl) {
+        inputEl.disabled = isNoValOp;
+        inputEl.placeholder = isNoValOp
+          ? entry.op === "isEmpty"
+            ? "(empty)"
+            : "(not empty)"
+          : "Filter… (!not, =, ^)";
+        if (inputEl.value !== (entry.rawValue || "")) {
+          inputEl.value = entry.rawValue || "";
+        }
+      }
+      const isActive = Boolean(resolveInlineFilterEntry(entry));
+      rowEl.classList.toggle("has-active-filter", isActive);
+    });
+  }
+
+  function restoreInlineFilterFocusIfNeeded() {
+    if (!activeFocusedInlineFilter || typeof document.querySelectorAll !== "function") return;
+    const { field, selectionStart, selectionEnd, isUnified } = activeFocusedInlineFilter;
+    if (Boolean(isUnified) !== Boolean(isUnifiedCorrelatedMode)) return;
+    const rows = document.querySelectorAll(".col-inline-filter-row");
+    for (const rowEl of rows) {
+      if (rowEl.dataset && rowEl.dataset.field === field) {
+        const inputEl = rowEl.querySelector(".col-inline-filter-input");
+        if (inputEl && document.activeElement !== inputEl && !inputEl.disabled) {
+          try {
+            inputEl.focus({ preventScroll: true });
+            if (typeof selectionStart === "number" && typeof inputEl.setSelectionRange === "function") {
+              inputEl.setSelectionRange(selectionStart, selectionEnd ?? selectionStart);
+            }
+          } catch (_) {}
+        }
+        break;
+      }
+    }
+  }
+
+  function createColumnHeaderWithInlineFilter({
+    titleText,
+    field,
+    isFrozen = false,
+    showPin = false,
+    isUnified = false,
+  }) {
+    const stack = document.createElement("div");
+    stack.className = "col-header-stack";
+
+    const topRow = document.createElement("span");
+    topRow.className = "col-header-inner";
+
+    const titleSpan = document.createElement("span");
+    titleSpan.className = "col-title-text";
+    titleSpan.textContent = titleText;
+    topRow.appendChild(titleSpan);
+
+    if (showPin) {
+      const pinBtn = document.createElement("button");
+      pinBtn.type = "button";
+      pinBtn.className = isFrozen ? "col-pin-btn is-pinned" : "col-pin-btn";
+      pinBtn.title = isFrozen
+        ? "Pinned timeline column (click or double-click header to unpin)"
+        : "Pin column to left (or double-click header)";
+      pinBtn.innerHTML = isFrozen ? "📌" : "📍";
+      pinBtn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        toggleColumnLock(field);
+      });
+      topRow.appendChild(pinBtn);
+    }
+
+    stack.appendChild(topRow);
+
+    const store = isUnified ? unifiedInlineFilters : singleFileInlineFilters;
+    const currentEntry = store.get(field) || { op: "contains", rawValue: "" };
+
+    const filterRow = document.createElement("div");
+    filterRow.className = "col-inline-filter-row";
+    if (filterRow.dataset) {
+      filterRow.dataset.field = field;
+    }
+
+    const stopHeaderEvent = (e) => {
+      e.stopPropagation();
+    };
+    filterRow.addEventListener("click", stopHeaderEvent);
+    filterRow.addEventListener("dblclick", stopHeaderEvent);
+    filterRow.addEventListener("mousedown", stopHeaderEvent);
+
+    const opSelect = document.createElement("select");
+    opSelect.className = "col-inline-filter-op";
+    opSelect.title = "Column filter operator (Contains, !Contains, Equals, !Equals, StartsWith, EndsWith, >, <, Empty, !Empty)";
+    INLINE_FILTER_OP_OPTIONS.forEach((optDef) => {
+      const opt = document.createElement("option");
+      opt.value = optDef.value;
+      opt.textContent = optDef.label;
+      opSelect.appendChild(opt);
+    });
+    opSelect.value = currentEntry.op || "contains";
+
+    const inputEl = document.createElement("input");
+    inputEl.type = "text";
+    inputEl.className = "col-inline-filter-input";
+    inputEl.value = currentEntry.rawValue || "";
+    inputEl.title = `Filter "${titleText}" — Tip: prefix with ! for NOT contains, = for exact, != for not equal, ^ for starts with, $ for ends with`;
+
+    const clearFilterBtn = document.createElement("button");
+    clearFilterBtn.type = "button";
+    clearFilterBtn.className = "col-inline-filter-clear";
+    clearFilterBtn.title = `Clear filter on ${titleText}`;
+    clearFilterBtn.textContent = "×";
+
+    const updateFilterRowVisualState = (entry) => {
+      const isNoValOp = entry.op === "isEmpty" || entry.op === "isNotEmpty";
+      inputEl.disabled = isNoValOp;
+      inputEl.placeholder = isNoValOp
+        ? entry.op === "isEmpty"
+          ? "(empty)"
+          : "(not empty)"
+        : "Filter… (!not, =, ^)";
+      const isActive = Boolean(resolveInlineFilterEntry(entry));
+      filterRow.classList.toggle("has-active-filter", isActive);
+    };
+
+    updateFilterRowVisualState(currentEntry);
+
+    const commitEntry = (immediate = false) => {
+      const nextEntry = {
+        op: opSelect.value || "contains",
+        rawValue: inputEl.value || "",
+      };
+      if (resolveInlineFilterEntry(nextEntry) || nextEntry.rawValue.length > 0 || nextEntry.op !== "contains") {
+        store.set(field, nextEntry);
+      } else {
+        store.delete(field);
+      }
+      updateFilterRowVisualState(nextEntry);
+
+      if (isUnified) {
+        applyUnifiedFilters();
+      } else if (immediate) {
+        applyControlsAndReload();
+      } else {
+        debouncedApply();
+      }
+    };
+
+    opSelect.addEventListener("change", (e) => {
+      e.stopPropagation();
+      commitEntry(true);
+    });
+
+    inputEl.addEventListener("focus", () => {
+      activeFocusedInlineFilter = {
+        field,
+        selectionStart: inputEl.selectionStart,
+        selectionEnd: inputEl.selectionEnd,
+        isUnified,
+      };
+    });
+
+    inputEl.addEventListener("blur", () => {
+      if (activeFocusedInlineFilter && activeFocusedInlineFilter.field === field) {
+        activeFocusedInlineFilter = null;
+      }
+    });
+
+    inputEl.addEventListener("input", (e) => {
+      e.stopPropagation();
+      activeFocusedInlineFilter = {
+        field,
+        selectionStart: inputEl.selectionStart,
+        selectionEnd: inputEl.selectionEnd,
+        isUnified,
+      };
+      commitEntry(false);
+    });
+
+    inputEl.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") {
+        e.preventDefault();
+        commitEntry(true);
+      } else if (e.key === "Escape") {
+        if (inputEl.value || opSelect.value !== "contains") {
+          e.preventDefault();
+          opSelect.value = "contains";
+          inputEl.value = "";
+          store.delete(field);
+          updateFilterRowVisualState({ op: "contains", rawValue: "" });
+          if (isUnified) {
+            applyUnifiedFilters();
+          } else {
+            applyControlsAndReload();
+          }
+        }
+      }
+    });
+
+    clearFilterBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      e.preventDefault();
+      opSelect.value = "contains";
+      inputEl.value = "";
+      store.delete(field);
+      updateFilterRowVisualState({ op: "contains", rawValue: "" });
+      if (isUnified) {
+        applyUnifiedFilters();
+      } else {
+        applyControlsAndReload();
+      }
+    });
+
+    filterRow.appendChild(opSelect);
+    filterRow.appendChild(inputEl);
+    filterRow.appendChild(clearFilterBtn);
+    stack.appendChild(filterRow);
+
+    return stack;
+  }
+
   function currentFilterValues() {
     const rows = filterList.querySelectorAll(".filter-row");
     const out = [];
@@ -3479,6 +3900,13 @@
         out.push({ column, op, value });
       }
     });
+
+    for (const [colSqlName, entry] of singleFileInlineFilters.entries()) {
+      const resolved = resolveInlineFilterEntry(entry);
+      if (resolved) {
+        out.push({ column: colSqlName, op: resolved.op, value: resolved.value });
+      }
+    }
 
     if (activeTimeFilter && Array.isArray(columns) && columns.length > 0) {
       const dtCol = findFirstDateTimeColumn(columns, columnRoleSuggestions);
@@ -3869,6 +4297,10 @@
     unhideAllRows({ reload: false });
     unhideAllColumns();
     clearTimeFilter({ reload: false });
+    singleFileInlineFilters.clear();
+    unifiedInlineFilters.clear();
+    activeFocusedInlineFilter = null;
+    syncInlineFilterInputsWithState();
     if (isUnifiedCorrelatedMode) {
       exitUnifiedCorrelatedGrid();
       return;
@@ -5798,6 +6230,7 @@
       });
       table.on("renderComplete", () => {
         updateColumnHeaderSelectionStyles();
+        restoreInlineFilterFocusIfNeeded();
       });
       table.on("rowDblClick", (e, row) => {
         if (row && typeof row.getData === "function") {
@@ -5829,36 +6262,20 @@
         headerSort: false,
         resizable: true,
         frozen: isFrozen,
-        minWidth: isFrozen ? 140 : 80,
+        minWidth: isFrozen ? 150 : 135,
         visible: !hiddenColFields.has(c.sqlName),
         headerTooltip: isFrozen
           ? "Pinned column · Ctrl+Click to select · Alt+Click to hide · Double-click to unpin"
           : "Click to sort · Ctrl+Click to select · Alt+Click to hide · Double-click to pin",
-        ...(isWideGrid ? { width: 160 } : {}),
+        ...(isWideGrid ? { width: 175 } : {}),
         titleFormatter() {
-          const wrapper = document.createElement("span");
-          wrapper.className = "col-header-inner";
-
-          const titleText = document.createElement("span");
-          titleText.className = "col-title-text";
-          titleText.textContent = c.originalName;
-          wrapper.appendChild(titleText);
-
-          const pinBtn = document.createElement("button");
-          pinBtn.type = "button";
-          pinBtn.className = isFrozen ? "col-pin-btn is-pinned" : "col-pin-btn";
-          pinBtn.title = isFrozen
-            ? "Pinned timeline column (click or double-click header to unpin)"
-            : "Pin column to left (or double-click header)";
-          pinBtn.innerHTML = isFrozen ? "📌" : "📍";
-          pinBtn.addEventListener("click", (e) => {
-            e.stopPropagation();
-            e.preventDefault();
-            toggleColumnLock(c.sqlName);
+          return createColumnHeaderWithInlineFilter({
+            titleText: c.originalName,
+            field: c.sqlName,
+            isFrozen,
+            showPin: true,
+            isUnified: false,
           });
-          wrapper.appendChild(pinBtn);
-
-          return wrapper;
         },
         headerClick(e, col) {
           if (e && (e.ctrlKey || e.metaKey)) {
@@ -5986,6 +6403,9 @@
     hiddenRowNums.clear();
     selectedColFields.clear();
     hiddenColFields.clear();
+    singleFileInlineFilters.clear();
+    unifiedInlineFilters.clear();
+    activeFocusedInlineFilter = null;
     updateHiddenIndicators();
     resetIntelUiState();
     searchBox.value = "";
@@ -8675,6 +9095,14 @@
     showProgress(label, fraction);
   });
 
+  listen("cross-ioc-progress", (event) => {
+    const payload = event.payload || {};
+    const { done, total, currentFile } = payload;
+    if (crossIocStatus && total > 0) {
+      crossIocStatus.textContent = `Extracting and correlating IOCs (${done} / ${total} files): ${currentFile || ""}...`;
+    }
+  });
+
   listen("batch-cache-progress", (event) => {
     const payload = event.payload || {};
     const path = payload.path;
@@ -9933,6 +10361,58 @@ If the command is benign or standard administrative activity, state that clearly
     const saveBtn = document.getElementById("settings-save-btn");
     const statusDot = document.getElementById("gemini-status-dot");
     const statusText = document.getElementById("gemini-status-text");
+    const fetchModelsBtn = document.getElementById("gemini-fetch-models-btn");
+    const customModelInput = document.getElementById("gemini-custom-model-input");
+    const fetchedGroup = document.getElementById("gemini-model-fetched-group");
+    const modelsHint = document.getElementById("gemini-models-hint");
+
+    function ensureModelOption(id, label) {
+      if (!modelSelect || !id) return;
+      const exists = Array.from(modelSelect.querySelectorAll("option")).some((o) => o.value === id);
+      if (exists) return;
+      const opt = document.createElement("option");
+      opt.value = id;
+      opt.textContent = label || id;
+      (fetchedGroup || modelSelect).appendChild(opt);
+    }
+
+    async function fetchModelsFromKey() {
+      const key = (keyInput && keyInput.value.trim()) || getStoredItem("logparser_gemini_api_key", "");
+      if (!key) {
+        if (modelsHint) modelsHint.textContent = "Enter an API key first.";
+        return;
+      }
+      if (fetchModelsBtn) fetchModelsBtn.disabled = true;
+      if (modelsHint) modelsHint.textContent = "Loading models…";
+      try {
+        const found = [];
+        let pageToken = "";
+        for (let i = 0; i < 10; i++) {
+          const url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&key=${encodeURIComponent(key)}${pageToken ? `&pageToken=${encodeURIComponent(pageToken)}` : ""}`;
+          const res = await fetch(url);
+          if (!res.ok) throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+          const data = await res.json();
+          (data.models || []).forEach((m) => {
+            if ((m.supportedGenerationMethods || []).includes("generateContent")) {
+              found.push({ id: String(m.name || "").replace(/^models\//, ""), label: m.displayName || "" });
+            }
+          });
+          pageToken = data.nextPageToken || "";
+          if (!pageToken) break;
+        }
+        const selected = modelSelect ? modelSelect.value : "";
+        if (fetchedGroup) fetchedGroup.innerHTML = "";
+        found.forEach((m) => ensureModelOption(m.id, m.label ? `${m.label} (${m.id})` : m.id));
+        if (modelSelect && selected) modelSelect.value = selected;
+        if (modelsHint) modelsHint.textContent = `${found.length} models available to your key were added to the list.`;
+      } catch (err) {
+        if (modelsHint) modelsHint.textContent = `Could not load models: ${err.message || err}`;
+      } finally {
+        if (fetchModelsBtn) fetchModelsBtn.disabled = false;
+      }
+    }
+
+    if (fetchModelsBtn) fetchModelsBtn.addEventListener("click", () => { fetchModelsFromKey(); });
 
     function getStoredItem(k, fallback = "") {
       try {
@@ -9952,7 +10432,7 @@ If the command is benign or standard administrative activity, state that clearly
       const key = getStoredItem("logparser_gemini_api_key", "");
       if (key) {
         if (statusDot) statusDot.style.background = "#22c55e";
-        if (statusText) statusText.textContent = "Connected: Gemini AI is active for deobfuscation and narratives";
+        if (statusText) statusText.textContent = `Connected: ${getStoredItem("logparser_gemini_model", "gemini-2.5-flash")} is active for deobfuscation and narratives`;
       } else {
         if (statusDot) statusDot.style.background = "#9ca3af";
         if (statusText) statusText.textContent = "Offline Forensic Mode (No API key configured — 0 network calls)";
@@ -9962,7 +10442,10 @@ If the command is benign or standard administrative activity, state that clearly
     function openModal() {
       if (!settingsModal) return;
       if (keyInput) keyInput.value = getStoredItem("logparser_gemini_api_key", "");
-      if (modelSelect) modelSelect.value = getStoredItem("logparser_gemini_model", "gemini-2.5-flash");
+      const storedModel = getStoredItem("logparser_gemini_model", "gemini-2.5-flash");
+      ensureModelOption(storedModel);
+      if (modelSelect) modelSelect.value = storedModel;
+      if (customModelInput) customModelInput.value = "";
       updateStatus();
       settingsModal.classList.remove("hidden");
       if (backdrop) backdrop.classList.remove("hidden");
@@ -9987,7 +10470,12 @@ If the command is benign or standard administrative activity, state that clearly
     if (saveBtn) {
       saveBtn.addEventListener("click", () => {
         if (keyInput) setStoredItem("logparser_gemini_api_key", keyInput.value.trim());
-        if (modelSelect) setStoredItem("logparser_gemini_model", modelSelect.value);
+        const customId = customModelInput ? customModelInput.value.trim().replace(/^models\//, "") : "";
+        if (customId) {
+          setStoredItem("logparser_gemini_model", customId);
+        } else if (modelSelect) {
+          setStoredItem("logparser_gemini_model", modelSelect.value);
+        }
         updateStatus();
         closeModal();
       });

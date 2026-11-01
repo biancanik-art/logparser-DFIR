@@ -2806,55 +2806,126 @@ pub struct CrossFileIocSummary {
     pub items: Vec<CrossFileIocItem>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CrossIocProgressPayload {
+    done: usize,
+    total: usize,
+    current_file: String,
+}
+
 #[tauri::command]
 pub async fn cross_ioc_overlap(
+    app: AppHandle,
+    files: Vec<FileTarget>,
+) -> Result<CrossFileIocSummary, String> {
+    cross_ioc_overlap_with_app(Some(app), files).await
+}
+
+pub async fn cross_ioc_overlap_with_app(
+    app: Option<AppHandle>,
     files: Vec<FileTarget>,
 ) -> Result<CrossFileIocSummary, String> {
     tauri::async_runtime::spawn_blocking(move || {
+        let total_files = files.len();
+        let worker_count = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(2, 8)
+            .min(total_files.max(1));
+
+        let next_idx = std::sync::atomic::AtomicUsize::new(0);
+        let done_count = std::sync::atomic::AtomicUsize::new(0);
+
+        let per_file_results: Vec<
+            Option<(
+                usize,
+                String,
+                String,
+                String,
+                crate::intel::ioc::IocExtractionSummary,
+            )>,
+        > = std::thread::scope(|s| {
+            let mut handles = Vec::with_capacity(worker_count);
+            for _ in 0..worker_count {
+                let files_ref = &files;
+                let next_idx_ref = &next_idx;
+                let done_ref = &done_count;
+                let app_ref = &app;
+                handles.push(s.spawn(move || {
+                    let mut local_out = Vec::new();
+                    loop {
+                        let idx =
+                            next_idx_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        if idx >= files_ref.len() {
+                            break;
+                        }
+                        let target = &files_ref[idx];
+                        let file_name = Path::new(&target.path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| target.path.clone());
+
+                        let extracted = (|| {
+                            let (sheet_name, db_path) = target.ensure_cached_db().ok()?;
+                            let conn = db::open(&db_path).ok()?;
+                            let columns = db::load_columns(&conn).ok()?;
+                            let summary = crate::intel::ioc::extract_iocs(
+                                &conn,
+                                &columns,
+                                |_, _, _| {},
+                            )
+                            .ok()?;
+                            Some((
+                                idx,
+                                file_name.clone(),
+                                target.path.clone(),
+                                sheet_name,
+                                summary,
+                            ))
+                        })();
+
+                        let completed =
+                            done_ref.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                        if let Some(ref handle) = app_ref {
+                            let _ = handle.emit(
+                                "cross-ioc-progress",
+                                CrossIocProgressPayload {
+                                    done: completed,
+                                    total: total_files,
+                                    current_file: file_name,
+                                },
+                            );
+                        }
+
+                        local_out.push(extracted);
+                    }
+                    local_out
+                }));
+            }
+
+            let mut combined = Vec::with_capacity(total_files);
+            for h in handles {
+                if let Ok(part) = h.join() {
+                    combined.extend(part);
+                }
+            }
+            combined
+        });
+
+        let mut valid_results: Vec<(
+            usize,
+            String,
+            String,
+            String,
+            crate::intel::ioc::IocExtractionSummary,
+        )> = per_file_results.into_iter().flatten().collect();
+        valid_results.sort_by_key(|(idx, _, _, _, _)| *idx);
+
         let mut map: HashMap<(String, String), CrossFileIocItem> = HashMap::new();
         let mut scanned_count = 0;
 
-        for target in &files {
-            let file_name = Path::new(&target.path)
-                .file_name()
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_else(|| target.path.clone());
-            let sheet_name = target.sheet.clone().unwrap_or_default();
-
-            let db_path = if let Some(ref p) = target.cache_db_path {
-                let candidate = PathBuf::from(p);
-                if candidate.exists() {
-                    candidate
-                } else {
-                    db::cache_db_path(Path::new(&target.path), &sheet_name)
-                        .unwrap_or_else(|_| PathBuf::from(p))
-                }
-            } else {
-                match db::cache_db_path(Path::new(&target.path), &sheet_name) {
-                    Ok(p) => p,
-                    Err(_) => continue,
-                }
-            };
-
-            if !db_path.exists() {
-                continue;
-            }
-
-            let conn = match db::open(&db_path) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            let columns = match db::load_columns(&conn) {
-                Ok(c) => c,
-                Err(_) => continue,
-            };
-
-            let summary = match crate::intel::ioc::extract_iocs(&conn, &columns, |_, _, _| {}) {
-                Ok(s) => s,
-                Err(_) => continue,
-            };
-
+        for (_idx, file_name, target_path, sheet_name, summary) in valid_results {
             scanned_count += 1;
 
             // 1. IPs
@@ -2875,7 +2946,7 @@ pub async fn cross_ioc_overlap(
                 }
                 entry.occurrences.push(CrossFileIocOccurrence {
                     file_name: file_name.clone(),
-                    path: target.path.clone(),
+                    path: target_path.clone(),
                     sheet: sheet_name.clone(),
                     count: ip.occurrence_count,
                     first_row: ip.first_row,
@@ -2897,7 +2968,7 @@ pub async fn cross_ioc_overlap(
                 entry.total_count += d.occurrence_count;
                 entry.occurrences.push(CrossFileIocOccurrence {
                     file_name: file_name.clone(),
-                    path: target.path.clone(),
+                    path: target_path.clone(),
                     sheet: sheet_name.clone(),
                     count: d.occurrence_count,
                     first_row: d.first_row,
@@ -2919,7 +2990,7 @@ pub async fn cross_ioc_overlap(
                 entry.total_count += u.occurrence_count;
                 entry.occurrences.push(CrossFileIocOccurrence {
                     file_name: file_name.clone(),
-                    path: target.path.clone(),
+                    path: target_path.clone(),
                     sheet: sheet_name.clone(),
                     count: u.occurrence_count,
                     first_row: u.first_row,
@@ -2941,7 +3012,7 @@ pub async fn cross_ioc_overlap(
                 entry.total_count += em.occurrence_count;
                 entry.occurrences.push(CrossFileIocOccurrence {
                     file_name: file_name.clone(),
-                    path: target.path.clone(),
+                    path: target_path.clone(),
                     sheet: sheet_name.clone(),
                     count: em.occurrence_count,
                     first_row: em.first_row,
@@ -2963,7 +3034,7 @@ pub async fn cross_ioc_overlap(
                 entry.total_count += ua.occurrence_count;
                 entry.occurrences.push(CrossFileIocOccurrence {
                     file_name: file_name.clone(),
-                    path: target.path.clone(),
+                    path: target_path.clone(),
                     sheet: sheet_name.clone(),
                     count: ua.occurrence_count,
                     first_row: ua.first_row,
@@ -2985,7 +3056,7 @@ pub async fn cross_ioc_overlap(
                 entry.total_count += ci.occurrence_count;
                 entry.occurrences.push(CrossFileIocOccurrence {
                     file_name: file_name.clone(),
-                    path: target.path.clone(),
+                    path: target_path.clone(),
                     sheet: sheet_name.clone(),
                     count: ci.occurrence_count,
                     first_row: ci.first_row,
@@ -4597,7 +4668,7 @@ mod tests {
         assert_eq!(results_alice[1].match_count, 0);
 
         // 3. Cross IOC Overlap
-        let ioc_summary = cross_ioc_overlap(files).await.unwrap();
+        let ioc_summary = cross_ioc_overlap_with_app(None, files).await.unwrap();
         assert_eq!(ioc_summary.files_scanned, 2);
         assert!(ioc_summary.overlapping_count >= 1);
         let shared_ip = ioc_summary

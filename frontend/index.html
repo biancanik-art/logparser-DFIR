@@ -872,11 +872,32 @@
         </div>
         <div style="margin-bottom: 16px;">
           <label style="font-weight: 600; display: block; margin-bottom: 6px;">Gemini Model</label>
-          <select id="gemini-model-select" style="width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
-            <option value="gemini-2.5-flash">Gemini 2.5 Flash (Ultra-fast, 1M context, recommended)</option>
-            <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
-            <option value="gemini-1.5-pro">Gemini 1.5 Pro</option>
-          </select>
+          <div style="display: flex; gap: 8px;">
+            <select id="gemini-model-select" style="flex: 1; padding: 6px 10px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text);">
+              <optgroup label="Gemini 2.5">
+                <option value="gemini-2.5-flash">Gemini 2.5 Flash (fast, 1M context, recommended)</option>
+                <option value="gemini-2.5-pro">Gemini 2.5 Pro (deepest reasoning, slower)</option>
+                <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash-Lite (cheapest / fastest)</option>
+              </optgroup>
+              <optgroup label="Always-latest aliases">
+                <option value="gemini-flash-latest">Gemini Flash (latest)</option>
+                <option value="gemini-pro-latest">Gemini Pro (latest)</option>
+                <option value="gemini-flash-lite-latest">Gemini Flash-Lite (latest)</option>
+              </optgroup>
+              <optgroup label="Gemini 2.0">
+                <option value="gemini-2.0-flash">Gemini 2.0 Flash</option>
+                <option value="gemini-2.0-flash-lite">Gemini 2.0 Flash-Lite</option>
+              </optgroup>
+              <optgroup label="Open models (Gemma)">
+                <option value="gemma-3-27b-it">Gemma 3 27B</option>
+                <option value="gemma-3-12b-it">Gemma 3 12B</option>
+              </optgroup>
+              <optgroup id="gemini-model-fetched-group" label="Available to your key"></optgroup>
+            </select>
+            <button id="gemini-fetch-models-btn" class="btn btn-small" type="button" title="Ask Google which models your API key can use">🔄 Load from key</button>
+          </div>
+          <input id="gemini-custom-model-input" type="text" placeholder="Or type any model ID (e.g. gemini-2.5-pro) — overrides the list" style="width: 100%; margin-top: 6px; padding: 6px 10px; font-family: monospace; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;" />
+          <span id="gemini-models-hint" style="display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px;">Click "Load from key" to list every model your key can access.</span>
         </div>
         <div id="gemini-status-indicator" style="padding: 8px 12px; border-radius: 4px; background: var(--panel-subtle); border: 1px solid var(--border); font-size: 12px; display: flex; align-items: center; gap: 8px;">
           <span id="gemini-status-dot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #9ca3af;"></span>

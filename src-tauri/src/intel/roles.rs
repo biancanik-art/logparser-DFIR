@@ -831,7 +831,9 @@ pub fn is_known_tool_or_browser_ua(val: &str) -> bool {
     if v.len() < 3 || v.len() > 1024 {
         return false;
     }
-    let vl = v.to_ascii_lowercase();
+    if !v.bytes().any(|b| b.is_ascii_alphabetic()) {
+        return false;
+    }
 
     // Standard browsers & engines
     if v.contains("Mozilla/")
@@ -848,7 +850,9 @@ pub fn is_known_tool_or_browser_ua(val: &str) -> bool {
         return true;
     }
 
-    // Exact matches or clean prefixes
+    let vl = v.to_ascii_lowercase();
+
+    // Exact matches or clean prefixes (zero heap allocations)
     const EXACT_OR_PREFIX_TOOLS: &[&str] = &[
         "curl", "wget", "axios", "sqlmap", "nikto", "nmap", "masscan", "zgrab",
         "dirbuster", "gobuster", "ffuf", "feroxbuster", "wfuzz", "hydra",
@@ -859,14 +863,12 @@ pub fn is_known_tool_or_browser_ua(val: &str) -> bool {
         "commix", "sublist3r", "amass", "arjun", "dalfox", "xsstrike",
     ];
     for &tool in EXACT_OR_PREFIX_TOOLS {
-        if vl == tool
-            || vl.starts_with(&format!("{tool}/"))
-            || vl.starts_with(&format!("{tool} "))
-            || vl.starts_with(&format!("{tool}-"))
-            || vl.starts_with(&format!("{tool}_"))
-            || vl.starts_with(&format!("{tool}v"))
-        {
-            return true;
+        if let Some(rest) = vl.strip_prefix(tool) {
+            if rest.is_empty()
+                || matches!(rest.as_bytes()[0], b'/' | b' ' | b'-' | b'_' | b'v')
+            {
+                return true;
+            }
         }
     }
 

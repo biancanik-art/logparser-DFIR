@@ -1043,3 +1043,177 @@ fn test_export_multi_file_forensic_workbook_aggregates_all_users_and_searched_io
 
     let _ = std::fs::remove_dir_all(&temp_dir);
 }
+
+#[test]
+fn test_kape_ioc_extraction_speed_and_inline_column_filtering() {
+    use log_parser_lib::commands::{cross_ioc_overlap_with_app, FileTarget};
+    use log_parser_lib::intel::ioc::extract_iocs;
+    use log_parser_lib::query::{self, ColumnFilter, FilterOp, QuerySpec};
+    use log_parser_lib::tabular_import;
+
+    let temp_dir = std::env::temp_dir().join(format!("dfir_kape_check_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    // 1. Create 3 synthetic KAPE-style CSV files (wide, with fractional-second timestamps)
+    let kape1_path = temp_dir.join("kape_mft_events.csv");
+    let kape2_path = temp_dir.join("kape_evtx_events.csv");
+    let kape3_path = temp_dir.join("kape_amcache_events.csv");
+
+    {
+        let mut f1 = File::create(&kape1_path).unwrap();
+        writeln!(f1, "SourceFile,Created0x10,LastModified0x10,FileName,FileSize,ParentPath,SHA256,ClientIP,UserAgent,Notes").unwrap();
+        // Row 1: with fractional timestamps and real IOCs
+        writeln!(f1, "C:\\Windows\\System32\\calc.exe,2026-10-31 12:34:56.1234567,2026-10-31 12:35:00.9876543,beacon.exe,45000,\\Windows\\Temp,e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855,198.51.100.22,curl/7.88.1,downloaded payload from https://malicious-domain.com/beacon.exe").unwrap();
+        // Row 2: with clean data
+        writeln!(f1, "C:\\Windows\\System32\\cmd.exe,2026-10-31 13:00:00.0000000,2026-10-31 13:01:00.0000000,cmd.exe,28000,\\Windows\\System32,,,Mozilla/5.0 (Windows NT 10.0; Win64; x64),normal shell").unwrap();
+        // Row 3: empty notes, numeric values for filter tests
+        writeln!(f1, "C:\\Users\\admin\\script.ps1,2026-10-31 14:15:30.5555555,2026-10-31 14:16:00.1111111,script.ps1,1200,\\Users\\admin,,10.0.0.99,,powershell -enc AAAA").unwrap();
+    }
+
+    {
+        let mut f2 = File::create(&kape2_path).unwrap();
+        writeln!(f2, "TimeCreated,EventID,Computer,SecurityID,IpAddress,PayloadDomain,Message").unwrap();
+        // Row 1: shared IP and shared domain
+        writeln!(f2, "2026-10-31 12:36:10.1234567,4624,WORKSTATION-01,domain\\alice,198.51.100.22,malicious-domain.com,Logon successful").unwrap();
+        // Row 2: email IOC
+        writeln!(f2, "2026-10-31 12:40:00.7654321,4625,WORKSTATION-01,domain\\bob,203.0.113.50,,Failed logon alert from phish@badactor.org").unwrap();
+    }
+
+    {
+        let mut f3 = File::create(&kape3_path).unwrap();
+        writeln!(f3, "LastModified,ProgramName,FileExtension,Hash,SourcePath").unwrap();
+        writeln!(f3, "2026-10-31 15:00:00.3333333,updater.exe,.exe,5d41402abc4b2a76b9719d911017c592,C:\\Temp\\updater.exe").unwrap();
+    }
+
+    let db1_path = temp_dir.join("kape1.db");
+    let db2_path = temp_dir.join("kape2.db");
+    let db3_path = temp_dir.join("kape3.db");
+
+    let res1 = tabular_import::import_into_db(&kape1_path, "", &db1_path, |_, _| {}).unwrap();
+    let res2 = tabular_import::import_into_db(&kape2_path, "", &db2_path, |_, _| {}).unwrap();
+    let _res3 = tabular_import::import_into_db(&kape3_path, "", &db3_path, |_, _| {}).unwrap();
+
+    assert_eq!(res1.row_count, 3);
+    assert_eq!(res2.row_count, 2);
+
+    let conn1 = db::open(&db1_path).unwrap();
+    let cols1 = db::load_columns(&conn1).unwrap();
+
+    // 2. Test extract_iocs on KAPE CSV:
+    let summary1 = extract_iocs(&conn1, &cols1, |_, _, _| {}).unwrap();
+    assert_eq!(summary1.rows_scanned, 3);
+
+    // Verify fractional timestamps like '2026-10-31 12:34:56.1234567' did NOT get extracted as IPs!
+    for ip in &summary1.ip_indicators {
+        assert!(!ip.ip.contains("1234567"), "Fractional timestamp must not be parsed as IP: {}", ip.ip);
+        assert!(!ip.ip.contains("2026"), "Year must not be parsed as IP: {}", ip.ip);
+    }
+    // Verify real IP extracted
+    assert!(summary1.ip_indicators.iter().any(|i| i.ip == "198.51.100.22"));
+
+    // Verify domain extracted from URL/notes
+    assert!(summary1.domain_indicators.iter().any(|d| d.domain == "malicious-domain.com"));
+
+    // Verify User Agent extracted
+    assert!(summary1.user_agent_indicators.iter().any(|u| u.user_agent.contains("curl")));
+
+    // Verify SHA256 hash extracted in correlation indicators
+    assert!(summary1.correlation_indicators.iter().any(|c| c.kind == "hash" && c.value.contains("e3b0c442")));
+
+    // 3. Test Inline Column Filtering operators via query::query_rows:
+    let make_filter = |col: &str, op: FilterOp, val: &str| -> QuerySpec {
+        QuerySpec {
+            search: None,
+            filters: vec![ColumnFilter {
+                column: col.to_string(),
+                op,
+                value: val.to_string(),
+            }],
+            sort: None,
+            expression: None,
+            cursor: None,
+            limit: 100,
+        }
+    };
+
+    let notes_col = cols1.iter().find(|c| c.original_name == "Notes").unwrap().sql_name.clone();
+    let file_col = cols1.iter().find(|c| c.original_name == "FileName").unwrap().sql_name.clone();
+    let size_col = cols1.iter().find(|c| c.original_name == "FileSize").unwrap().sql_name.clone();
+    let sha_col = cols1.iter().find(|c| c.original_name == "SHA256").unwrap().sql_name.clone();
+
+    // Operator: Contains
+    let rows_contains = query::query_rows(&conn1, &cols1, &make_filter(&notes_col, FilterOp::Contains, "payload")).unwrap();
+    assert_eq!(rows_contains.rows.len(), 1);
+
+    // Operator: NotContains
+    let rows_not_contains = query::query_rows(&conn1, &cols1, &make_filter(&notes_col, FilterOp::NotContains, "payload")).unwrap();
+    assert_eq!(rows_not_contains.rows.len(), 2);
+
+    // Operator: Equals
+    let rows_eq = query::query_rows(&conn1, &cols1, &make_filter(&file_col, FilterOp::Equals, "cmd.exe")).unwrap();
+    assert_eq!(rows_eq.rows.len(), 1);
+
+    // Operator: NotEquals
+    let rows_neq = query::query_rows(&conn1, &cols1, &make_filter(&file_col, FilterOp::NotEquals, "cmd.exe")).unwrap();
+    assert_eq!(rows_neq.rows.len(), 2);
+
+    // Operator: StartsWith
+    let rows_starts = query::query_rows(&conn1, &cols1, &make_filter(&file_col, FilterOp::StartsWith, "script")).unwrap();
+    assert_eq!(rows_starts.rows.len(), 1);
+
+    // Operator: EndsWith
+    let rows_ends = query::query_rows(&conn1, &cols1, &make_filter(&file_col, FilterOp::EndsWith, ".exe")).unwrap();
+    assert_eq!(rows_ends.rows.len(), 2);
+
+    // Operator: GreaterThan (numeric compare on FileSize)
+    let rows_gt = query::query_rows(&conn1, &cols1, &make_filter(&size_col, FilterOp::GreaterThan, "20000")).unwrap();
+    assert_eq!(rows_gt.rows.len(), 2); // 45000 and 28000
+
+    // Operator: LessThan (numeric compare on FileSize)
+    let rows_lt = query::query_rows(&conn1, &cols1, &make_filter(&size_col, FilterOp::LessThan, "20000")).unwrap();
+    assert_eq!(rows_lt.rows.len(), 1); // 1200
+
+    // Operator: IsEmpty (SHA256 is empty on row 2 and 3)
+    let rows_empty = query::query_rows(&conn1, &cols1, &make_filter(&sha_col, FilterOp::IsEmpty, "")).unwrap();
+    assert_eq!(rows_empty.rows.len(), 2);
+
+    // Operator: IsNotEmpty (SHA256 is present on row 1)
+    let rows_not_empty = query::query_rows(&conn1, &cols1, &make_filter(&sha_col, FilterOp::IsNotEmpty, "")).unwrap();
+    assert_eq!(rows_not_empty.rows.len(), 1);
+
+    // 4. Test parallel cross_ioc_overlap across the 3 KAPE artifact files:
+    let file_targets = vec![
+        FileTarget {
+            path: kape1_path.to_string_lossy().to_string(),
+            sheet: None,
+            cache_db_path: Some(db1_path.to_string_lossy().to_string()),
+        },
+        FileTarget {
+            path: kape2_path.to_string_lossy().to_string(),
+            sheet: None,
+            cache_db_path: Some(db2_path.to_string_lossy().to_string()),
+        },
+        FileTarget {
+            path: kape3_path.to_string_lossy().to_string(),
+            sheet: None,
+            cache_db_path: Some(db3_path.to_string_lossy().to_string()),
+        },
+    ];
+
+    let overlap_summary = tauri::async_runtime::block_on(async {
+        cross_ioc_overlap_with_app(None, file_targets).await.unwrap()
+    });
+
+    assert_eq!(overlap_summary.files_scanned, 3);
+    assert!(overlap_summary.overlapping_count >= 2, "198.51.100.22 and malicious-domain.com appear in 2 files");
+
+    let shared_ip = overlap_summary.items.iter().find(|i| i.value == "198.51.100.22").unwrap();
+    assert_eq!(shared_ip.file_count, 2);
+    assert_eq!(shared_ip.total_count, 2);
+
+    let shared_domain = overlap_summary.items.iter().find(|i| i.value == "malicious-domain.com").unwrap();
+    assert_eq!(shared_domain.file_count, 2);
+
+    let _ = std::fs::remove_dir_all(&temp_dir);
+}

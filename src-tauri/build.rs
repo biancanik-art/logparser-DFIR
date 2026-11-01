@@ -1,4 +1,7 @@
 fn main() {
+    println!("cargo:rerun-if-changed=../frontend/index.html");
+    println!("cargo:rerun-if-changed=../frontend/app.js");
+    println!("cargo:rerun-if-changed=../frontend/style.css");
     tauri_build::build();
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         if let Ok(out_dir) = std::env::var("OUT_DIR") {
