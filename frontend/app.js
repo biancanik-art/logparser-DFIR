@@ -8178,7 +8178,11 @@
   if (correlationRefreshBtn) {
     correlationRefreshBtn.addEventListener("click", () => {
       renderCorrelationScope();
-      if (crossSearchInput.value.trim()) runCrossFileSearch();
+      if (crossSearchInput && crossSearchInput.value.trim()) {
+        runCrossFileSearch();
+      } else {
+        runCrossBatchSearch();
+      }
       if (crossIocSummary) runCrossIocScan();
     });
   }

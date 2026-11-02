@@ -131,3 +131,42 @@ The workbench provides **5 purpose-built tabs** with **Evidence Grid** first and
    - Added deterministic **Offline Forensic Deobfuscator** (`offlineDeobfuscatePayload`) for PowerShell `-EncodedCommand` (UTF-16LE Base64), standard Base64, URL encoding, and backtick/caret obfuscation with automatic MITRE ATT&CK mapping and IOC extraction.
    - Added **Offline Incident Narrative** (`generateOfflineIncidentNarrative`) so `[ ✨ Generate Narrative ]` works 100% offline without a Gemini API key (and combines with Gemini AI when configured).
    - Enabled the Slide-Over Row Detail & Deobfuscation Drawer (`openUnifiedRowDetailDrawer`) and Date/Time range filter across both single-file Evidence Grid mode and Unified Master Timeline mode.
+
+
+---
+
+## 8. Master Timeline Persistence & Discrepancy Fix (8,273 vs. 5,470 Events)
+
+### Issue Summary
+* **Observation**: When loading 34 evidence files without filters or keywords, the Master Timeline initially generated **8,273 correlated events**. After filtering in the Evidence Grid or running threat enrichment, clearing all UI filters, and generating the Master Timeline again, the count dropped to **5,470 events**.
+* **Examiner Discrepancy**: One examiner saw 8,273 events, while another saw 5,470 events on the same file set with zero visible UI filters applied.
+
+### Root Cause Analysis
+1. In `src-tauri/src/intel/analyst.rs:find_matching_timeline_rows()`, when `keywords.is_empty()`, the function checked `if table_exists(conn, "_intel_match")?`.
+2. On fresh file ingestion, `_intel_match` does not exist in the cached SQLite databases on disk. The query fell through to `SELECT row_num FROM rows ORDER BY row_num ASC LIMIT 500`, yielding up to 500 rows per file (totalling **8,273 events** across 34 files).
+3. When the examiner applied a filter or executed Threat Enrichment / Intel Scan, `_intel_match` was created and populated with detected MITRE/threat hits inside the SQLite cache database.
+4. Clicking "Clear Filters" in the UI cleared the frontend Tabulator state, but **`_intel_match` persisted inside the SQLite database on disk**.
+5. When regenerating the Master Timeline, `table_exists(conn, "_intel_match")` evaluated to `true`, causing `find_matching_timeline_rows` to execute `SELECT DISTINCT row_num FROM _intel_match LIMIT 500` instead of querying `rows`. This silently restricted the Master Timeline to threat matches only (**5,470 events**).
+
+### Fixes Applied
+1. **Backend Query Determinism (`src-tauri/src/intel/analyst.rs`)**:
+   - In `find_matching_timeline_rows()`, removed the conditional branch that prioritized `_intel_match` when `keywords.is_empty()`.
+   - Master Timeline without keywords now **always queries `rows` directly**:
+     ```rust
+     if keywords.is_empty() {
+         let mut stmt = conn.prepare("SELECT row_num FROM rows ORDER BY row_num ASC LIMIT 500")?;
+         let rows: Vec<i64> = stmt.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+         return Ok(rows);
+     }
+     ```
+   - This guarantees 100% deterministic, bit-for-bit reproducible Master Timeline generation (consistently returning the complete ~8,273 chronological events), immune to prior UI filtering or background Intel scans.
+2. **Frontend Refresh Action (`frontend/app.js`)**:
+   - Updated `correlation-refresh-btn` (`[ 🔄 Refresh ]` button in `tab-correlation` header) so that when `crossSearchInput` is empty, it invokes `runCrossBatchSearch()`, actively refreshing the Master Timeline and file scope.
+3. **Regression Coverage (`src-tauri/src/intel/analyst.rs`)**:
+   - Added `empty_timeline_ignores_persisted_intel_matches`, which creates both `rows` and a populated `_intel_match` table and asserts that an empty-keyword timeline still returns the first 500 raw rows.
+
+### Live Verification (2026-11-02)
+* Rebuilt `src-tauri/target/debug/log-parser.exe` and loaded the original 34-file `C:\cases\raceX_parsed` evidence set.
+* Confirmed all 34 loaded SQLite caches already contained persisted `_intel_match` tables, reproducing the state that previously changed timeline results.
+* An empty Master Timeline search returned **8,273 correlated events across 34 files**.
+* Clicking the header **Refresh** button reran the search and again returned **8,273 correlated events**, confirming that the result is stable after persisted threat-scan state and through the refresh path.

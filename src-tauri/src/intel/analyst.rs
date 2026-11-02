@@ -1889,17 +1889,8 @@ fn find_matching_timeline_rows(
     columns: &[ColumnMeta],
 ) -> Result<Vec<i64>> {
     if keywords.is_empty() {
-        if table_exists(conn, "_intel_match")? {
-            let mut stmt = conn.prepare(
-                "SELECT DISTINCT row_num FROM _intel_match ORDER BY row_num ASC LIMIT 500",
-            )?;
-            let rows: Vec<i64> = stmt
-                .query_map([], |r| r.get(0))?
-                .collect::<rusqlite::Result<Vec<_>>>()?;
-            if !rows.is_empty() {
-                return Ok(rows);
-            }
-        }
+        // Query rows directly so chronological timeline events are never silently
+        // restricted by prior threat scans or persisted _intel_match tables.
         let mut stmt = conn.prepare("SELECT row_num FROM rows ORDER BY row_num ASC LIMIT 500")?;
         let rows: Vec<i64> = stmt
             .query_map([], |r| r.get(0))?
@@ -3599,6 +3590,35 @@ pub fn multi_file_hunt(
 mod tests {
     use super::*;
     use crate::db::ImportInfo;
+
+    #[test]
+    fn empty_timeline_ignores_persisted_intel_matches() {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE rows (row_num INTEGER PRIMARY KEY, evidence TEXT);
+             CREATE TABLE _intel_match (row_num INTEGER NOT NULL);
+             INSERT INTO _intel_match (row_num) VALUES (2), (4), (6);",
+        )
+        .unwrap();
+
+        {
+            let mut insert = conn
+                .prepare("INSERT INTO rows (row_num, evidence) VALUES (?1, ?2)")
+                .unwrap();
+            for row_num in 1_i64..=600 {
+                insert
+                    .execute((row_num, format!("evidence row {row_num}")))
+                    .unwrap();
+            }
+        }
+
+        let row_ids = find_matching_timeline_rows(&conn, &[], &[]).unwrap();
+
+        assert_eq!(row_ids.len(), 500);
+        assert_eq!(row_ids.first(), Some(&1));
+        assert_eq!(row_ids.last(), Some(&500));
+        assert_eq!(row_ids, (1_i64..=500).collect::<Vec<_>>());
+    }
 
     #[test]
     fn classification_covers_the_users_example_asks() {
