@@ -16,12 +16,16 @@ jobs:
         include:
           - platform: 'macos-latest'
             args: '--target aarch64-apple-darwin'
+            runtime_id: 'macos-arm64'
           - platform: 'macos-latest'
             args: '--target x86_64-apple-darwin'
+            runtime_id: 'macos-x64'
           - platform: 'ubuntu-22.04'
             args: '--bundles deb'
+            runtime_id: 'linux-x64'
           - platform: 'windows-latest'
             args: ''
+            runtime_id: 'windows-x64'
 
     runs-on: ${{ matrix.platform }}
     steps:
@@ -46,7 +50,7 @@ jobs:
       - name: Verify the direct AI search flow
         run: |
           node --check frontend/app.js
-          node --test frontend/tests/guided-query-flow.test.cjs
+          node --test frontend/tests/guided-query-flow.test.cjs frontend/tests/ai-evidence-assistant.test.cjs
 
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
@@ -58,14 +62,44 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Test the pinned llama.cpp runtime fetcher
+        run: python scripts/test_fetch_llama_runtime.py
+
       - name: Cache pinned local-AI resources
         uses: actions/cache@v4
         with:
-          path: src-tauri/resources/models
-          key: offline-ai-models-${{ runner.os }}-ba8627a4-c0382117-53aa5117-be50c362-953f9c0d
+          path: |
+            src-tauri/resources/models
+            src-tauri/resources/llama-cpp-runtime
+          key: offline-ai-runtime-${{ matrix.runtime_id }}-b12080-minilm-53aa5117-be50c362-953f9c0d
 
-      - name: Fetch and verify pinned local-AI resources
+      - name: Fetch and verify pinned local-AI semantic resources
         run: python scripts/fetch_llm_resources.py
+
+      - name: Fetch and verify pinned llama.cpp runtime
+        run: python scripts/fetch_llama_runtime.py --platform ${{ matrix.runtime_id }}
+
+      - name: Verify llama-server executable (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '& ".\src-tauri\resources\llama-cpp-runtime\llama-server.exe" --version'
+
+      - name: Verify llama-server executable (Unix)
+        if: runner.os == 'Linux' || matrix.runtime_id == 'macos-arm64'
+        shell: bash
+        run: ./src-tauri/resources/llama-cpp-runtime/llama-server --version
+
+      - name: Verify llama-server architecture (macOS Intel cross-build)
+        if: matrix.runtime_id == 'macos-x64'
+        shell: bash
+        run: file ./src-tauri/resources/llama-cpp-runtime/llama-server | grep -q 'x86_64'
+
+      - name: Run backend security and runtime unit tests
+        run: |
+          cargo test local_ai_manager --lib
+          cargo test local_ai_runtime --lib
+          cargo test cloud_ai --lib
+        working-directory: src-tauri
 
       - uses: tauri-apps/tauri-action@v1
         env:
@@ -81,3 +115,4 @@ jobs:
           releaseDraft: false
           prerelease: false
           args: ${{ matrix.args }}
+
