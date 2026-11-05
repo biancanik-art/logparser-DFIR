@@ -1687,12 +1687,18 @@ mod tests {
                     Ok(s) => s,
                     Err(_) => break,
                 };
+                // Drain the request before closing the socket. Otherwise some
+                // platforms send a TCP reset for unread request bytes and the
+                // client can observe a truncated response body.
+                let mut request = [0_u8; 4096];
+                let _ = stream.read(&mut request);
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
                     payload.len()
                 );
                 let _ = stream.write_all(resp.as_bytes());
                 let _ = stream.write_all(payload);
+                let _ = stream.flush();
             }
         });
 
