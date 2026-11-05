@@ -7,9 +7,34 @@ You may obtain a copy of the License at
 
     http://www.apache.org/licenses/LICENSE-2.0
 
-This product bundles Qwen2.5-1.5B-Instruct model weights developed by the
-Qwen team. The model is distributed under the Apache License, Version 2.0.
+This product packages the llama.cpp server runtime (release b12080) developed
+by Georgi Gerganov and the ggml-org contributors, distributed under the MIT License:
+
+    Copyright (c) 2023-2026 The ggml authors
+
+    Permission is hereby granted, free of charge, to any person obtaining a copy
+    of this software and associated documentation files (the "Software"), to deal
+    in the Software without restriction, including without limitation the rights
+    to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+    copies of the Software, and to permit persons to whom the Software is
+    furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice shall be included in all
+    copies or substantial portions of the Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+    AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+    OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+    SOFTWARE.
 
 This product bundles all-MiniLM-L6-v2 model weights developed by the
 sentence-transformers project. The model is distributed under the Apache
 License, Version 2.0.
+
+The optional gpt-oss-20b GGUF model is not bundled with the installer. When an
+examiner explicitly downloads it from the application, the model is obtained
+from the ggml-org/gpt-oss-20b-GGUF repository and is distributed under the
+Apache License, Version 2.0.

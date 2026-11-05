@@ -22,7 +22,7 @@ See the [wiki](../../wiki) for a full user guide.
 - Automatic data mapping for timestamps and common evidence fields, with optional manual overrides. Mapping is metadata for timelines and threat enrichment; it never limits which raw rows the AI can search.
 - UTC timestamp normalization, with an explicit prompt when a timestamp's timezone is ambiguous.
 - An offline, built-in MITRE ATT&CK-style keyword library, scanned via Aho-Corasick pattern matching, extensible with your own custom categories.
-- Local AI evidence search powered by embedded Qwen2.5-1.5B-Instruct and all-MiniLM-L6-v2 models. Describe the evidence in plain language (for example, *"show failed logins followed by PowerShell activity for alice, chronologically"*). Qwen plans a validated, bounded lexical/structured query over the complete raw table. MiniLM can supplement that plan with semantically similar evidence. Neither path is restricted by data mappings or rows found by the optional threat scan.
+- Offline evidence search and optional local/cloud AI assistance. The application remains fully usable offline without any local model installed via fast deterministic search rules and embedded all-MiniLM-L6-v2 semantic retrieval. When the optional 12.1 GB `gpt-oss-20b` model is downloaded, offline query planning and multi-turn evidence analysis run via a managed, loopback-only llama.cpp server runtime. Examiners may also optionally use Google Gemini (cloud BYOK) with explicit transfer confirmation.
 - One-step AI search: submitting a request validates and executes its bounded plan immediately, and asks for clarification only when a safe search cannot be formed. Returned rows include a `Why matched` explanation. Generated search values must be grounded in the examiner's request. The models cannot execute SQL, read arbitrary files, launch processes, or access the network.
 - Interactive Threat Enrichment & Attack Chains: Clickable MITRE ATT&CK tactics, techniques, and correlated attack chains. In multi-file cases, 1-click drilldowns ("View in Table" / "Filter Grid") seamlessly route to the Unified Correlated Grid when matches span multiple files, or auto-switch to the matching evidence file when hits are concentrated in a single log.
 - One-click multi-sheet XLSX report export: a case-summary sheet, a chronological MITRE-mapped timeline, and one sheet per matched technique category — every row traceable back to its original source row. Also supports exporting the complete Unified Correlated Grid into multi-sheet Excel workbooks.
@@ -61,6 +61,7 @@ build-time download, not an application runtime download:
 
 ```sh
 python scripts/fetch_llm_resources.py
+python scripts/fetch_llama_runtime.py --platform <windows-x64|linux-x64|macos-arm64|macos-x64>
 cd src-tauri
 cargo tauri build
 ```
@@ -74,6 +75,7 @@ To run in development mode:
 
 ```sh
 python scripts/fetch_llm_resources.py
+python scripts/fetch_llama_runtime.py --platform <windows-x64|linux-x64|macos-arm64|macos-x64>
 cd src-tauri
 cargo tauri dev
 ```
@@ -89,11 +91,7 @@ Rust + [Tauri v2](https://v2.tauri.app/) · [calamine](https://github.com/tafia/
 (Excel parsing) · SQLite via [rusqlite](https://github.com/rusqlite/rusqlite)
 (bundled, FTS5 full-text search) · [aho-corasick](https://github.com/BurntSushi/aho-corasick)
 (keyword matching) · [rust_xlsxwriter](https://github.com/jmcnamara/rust_xlsxwriter)
-(report export) · [Candle](https://github.com/huggingface/candle) with
-[Qwen2.5-1.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct)
-for local query planning and
-[all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2)
-for semantic retrieval · plain HTML/CSS/vanilla JS frontend
+(report export) · Managed local [llama.cpp](https://github.com/ggml-org/llama.cpp) (release b12080) for optional offline [gpt-oss-20b](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF) planning and multi-turn evidence analysis · [Candle](https://github.com/huggingface/candle) with [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) for semantic retrieval · optional Google Gemini cloud BYOK · plain HTML/CSS/vanilla JS frontend
 ([Tabulator.js](https://tabulator.info/) for the grid), no build step.
 
 ## Downloads

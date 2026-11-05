@@ -1,6 +1,6 @@
 use crate::db::{self, ColumnMeta};
 use crate::intel::library::{self, LoadedLibrary, Technique};
-use crate::intel::llm_parser::{self, LlmContext, LlmParser};
+use crate::intel::llm_parser::{self, GuidedQueryPlanner, LlmContext};
 use crate::query::{
     ColumnFilter, Cursor, FilterOp, QueryExpression, QuerySpec, SortDirection, SortSpec,
 };
@@ -197,7 +197,7 @@ pub fn parse_guided_query_with_llm(
     conn: &Connection,
     columns: &[ColumnMeta],
     query_text: &str,
-    model: &mut LlmParser,
+    model: &mut dyn GuidedQueryPlanner,
 ) -> Result<GuidedQueryPreview> {
     parse_guided_query_with_llm_and_semantic(conn, columns, query_text, model, &[])
 }
@@ -206,7 +206,7 @@ pub fn parse_guided_query_with_llm_and_semantic(
     conn: &Connection,
     columns: &[ColumnMeta],
     query_text: &str,
-    model: &mut LlmParser,
+    model: &mut dyn GuidedQueryPlanner,
     semantic_row_ids: &[i64],
 ) -> Result<GuidedQueryPreview> {
     parse_guided_query_with_llm_and_semantic_selection(
@@ -223,7 +223,7 @@ pub fn parse_guided_query_with_llm_and_semantic_selection(
     conn: &Connection,
     columns: &[ColumnMeta],
     query_text: &str,
-    model: &mut LlmParser,
+    model: &mut dyn GuidedQueryPlanner,
     semantic_row_ids: &[i64],
     semantic_selection_id: Option<&str>,
 ) -> Result<GuidedQueryPreview> {
@@ -252,7 +252,7 @@ pub fn parse_guided_query_with_llm_and_semantic_selection(
 
     // The local model only proposes a bounded plan. Strict Rust validation in `llm_parser`
     // checks every column, operator, literal, branch, and sort before this token is created.
-    let mut result = model.parse(trimmed, &llm_context)?;
+    let mut result = model.plan(trimmed, &llm_context)?;
     if let GuidedIntent::RawEvidenceSearch {
         semantic_row_ids: trusted_ids,
         semantic_selection_id: trusted_selection,
@@ -3515,7 +3515,7 @@ mod tests {
         let tokenizer_path = manifest
             .join("resources")
             .join(llm_parser::TOKENIZER_RESOURCE_PATH);
-        let mut model = LlmParser::load(&model_path, &tokenizer_path).unwrap();
+        let mut model = llm_parser::LlmParser::load(&model_path, &tokenizer_path).unwrap();
         let mut account = account_column();
         account.col_index = 1;
         let columns = vec![

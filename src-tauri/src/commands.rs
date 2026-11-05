@@ -10,6 +10,7 @@ use crate::semantic;
 use crate::tabular_import;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -139,7 +140,6 @@ pub struct AppStateInner {
 #[derive(Default)]
 pub struct AppState {
     pub loaded: Mutex<Option<AppStateInner>>,
-    pub llm: Arc<Mutex<Option<llm_parser::LlmParser>>>,
     pub semantic: Arc<Mutex<Option<Arc<semantic::SemanticModel>>>>,
     semantic_cancel: Mutex<Option<Arc<AtomicBool>>>,
     next_generation: AtomicU64,
@@ -740,13 +740,12 @@ pub async fn import_sheet(
     })
 }
 
-/// Drops any resident AI models. `try_lock` so an in-flight AI operation keeps the model it
-/// is using — skipping the release then is correct, not a failure.
+/// Stops the managed gpt-oss process and drops the embedded semantic model when it is idle.
+/// `try_lock` keeps an in-flight semantic operation safe; skipping that release is intentional.
 fn release_ai_models(state: &AppState) -> bool {
-    let mut released = false;
-    if let Ok(mut slot) = state.llm.try_lock() {
-        released |= slot.take().is_some();
-    }
+    let mut released = crate::local_ai_runtime::GLOBAL_SUPERVISOR
+        .stop_if_idle()
+        .unwrap_or(false);
     if let Ok(mut slot) = state.semantic.try_lock() {
         released |= slot.take().is_some();
     }
@@ -1056,9 +1055,6 @@ pub async fn parse_guided_query(
 ) -> Result<guided_parser::GuidedQueryPreview, String> {
     let (db_path, columns, generation) = state_snapshot(&state)?;
     let parsed_db_path = db_path.clone();
-    let model_path = resolve_llm_resource(&app, llm_parser::MODEL_RESOURCE_PATH)?;
-    let tokenizer_path = resolve_llm_resource(&app, llm_parser::TOKENIZER_RESOURCE_PATH)?;
-    let llm = Arc::clone(&state.llm);
     let semantic_model = Arc::clone(&state.semantic);
     let semantic_paths = (|| {
         Ok::<_, String>((
@@ -1067,24 +1063,13 @@ pub async fn parse_guided_query(
             resolve_llm_resource(&app, semantic::CONFIG_RESOURCE_PATH)?,
         ))
     })();
+    let app_clone = app.clone();
+    let model_installed = crate::local_ai_manager::get_model_dir(&app)
+        .map(|dir| dir.join(crate::local_ai_manager::FINAL_FILENAME).is_file())
+        .unwrap_or(false);
     let preview = tauri::async_runtime::spawn_blocking(
         move || -> Result<guided_parser::GuidedQueryPreview, String> {
             let mut conn = db::open(&db_path).map_err(|e| e.to_string())?;
-            let mut guard = llm
-                .lock()
-                .map_err(|_| "local AI model lock poisoned".to_string())?;
-            if guard.is_none() {
-                *guard = Some(
-                    llm_parser::LlmParser::load(&model_path, &tokenizer_path)
-                        .map_err(|error| error.to_string())?,
-                );
-            }
-            let model = guard
-                .as_mut()
-                .ok_or_else(|| "local AI model failed to initialize".to_string())?;
-            // Load the larger planner first. On a first search this gives the concurrent semantic
-            // builder time to publish, avoiding an exact-only plan that is already stale by the
-            // time Qwen finishes loading. Every non-use path remains explicitly audited below.
             let semantic_preparation = prepare_semantic_selection(
                 &mut conn,
                 &columns,
@@ -1092,9 +1077,6 @@ pub async fn parse_guided_query(
                 &semantic_model,
                 &semantic_paths,
             );
-            // Validate immediately before the one permitted model invocation. A stale or
-            // otherwise unusable trusted selection degrades to the literal plan up front;
-            // arbitrary planner/model/grounding errors are never retried.
             let semantic_preparation =
                 prevalidate_semantic_preparation(semantic_preparation, |selection_id| {
                     semantic::validate_semantic_selection(&conn, &columns, selection_id)
@@ -1102,20 +1084,52 @@ pub async fn parse_guided_query(
                 });
             let semantic_selection_id =
                 semantic_selection_id_for_preparation(&semantic_preparation);
-            let mut preview = plan_with_prevalidated_semantic_selection(
-                semantic_selection_id,
-                |selection_id| {
-                    guided_parser::parse_guided_query_with_llm_and_semantic_selection(
-                        &conn,
-                        &columns,
-                        &query_text,
-                        model,
-                        &[],
-                        selection_id,
-                    )
-                    .map_err(|error| error.to_string())
-                },
-            )?;
+            let mut preview = if model_installed {
+                let _inference_guard = crate::local_ai_runtime::GLOBAL_SUPERVISOR
+                    .acquire_inference()?;
+                match crate::local_ai_runtime::GLOBAL_SUPERVISOR.start(&app_clone) {
+                    Ok((port, token)) => {
+                        let address: SocketAddr = format!("127.0.0.1:{port}")
+                            .parse()
+                            .map_err(|error| format!("Parsing loopback address: {error}"))?;
+                        let mut planner =
+                            crate::local_ai_runtime::GptOssPlanner::connect(address, token)
+                                .map_err(|error| error.to_string())?;
+                        plan_with_prevalidated_semantic_selection(
+                            semantic_selection_id,
+                            |selection_id| {
+                                guided_parser::parse_guided_query_with_llm_and_semantic_selection(
+                                    &conn,
+                                    &columns,
+                                    &query_text,
+                                    &mut planner,
+                                    &[],
+                                    selection_id,
+                                )
+                                .map_err(|error| error.to_string())
+                            },
+                        )?
+                    }
+                    Err(error) => {
+                        let mut preview =
+                            guided_parser::parse_guided_query(&conn, &columns, &query_text)
+                                .map_err(|parse_error| parse_error.to_string())?;
+                        preview.match_explanation.insert(
+                            0,
+                            format!("Local AI runtime unavailable ({error}); used Deterministic Offline search."),
+                        );
+                        preview
+                    }
+                }
+            } else {
+                let mut preview = guided_parser::parse_guided_query(&conn, &columns, &query_text)
+                    .map_err(|error| error.to_string())?;
+                preview.match_explanation.insert(
+                    0,
+                    "Deterministic Offline search used (gpt-oss model not installed).".to_string(),
+                );
+                preview
+            };
             let outcome = match semantic_preparation {
                 SemanticPreparation::Fallback(outcome) => outcome,
                 SemanticPreparation::Selection(selection)

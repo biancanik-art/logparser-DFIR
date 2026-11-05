@@ -44,6 +44,10 @@
         <span class="tab-icon">📊</span> Evidence Grid
         <span id="badge-grid" class="nav-tab-badge hidden">0</span>
       </button>
+      <button class="nav-tab" data-tab="tab-analyst" role="tab" aria-selected="false">
+        <span class="tab-icon">🤖</span> AI Evidence Assistant
+        <span id="badge-staged-count" class="nav-tab-badge hidden">0 selected</span>
+      </button>
       <button class="nav-tab" data-tab="tab-correlation" role="tab" aria-selected="false">
         <span class="tab-icon">🎯</span> Targeted Hunt &amp; Master Timeline
         <span id="badge-correlation" class="nav-tab-badge hidden">0 files</span>
@@ -120,6 +124,7 @@
             </div>
           </div>
           <div class="pane-actions">
+            <button id="grid-stage-ai-btn" class="btn btn-small btn-secondary hidden" type="button" disabled title="Select one or more Master Timeline rows, then analyze exactly those rows in the AI Evidence Assistant">🤖 Analyze Selected Rows</button>
             <button id="grid-export-csv-btn" class="btn btn-small" title="Export current filtered results to CSV" disabled>📥 Export CSV</button>
             <button id="grid-export-xlsx-btn" class="btn btn-small" title="Export current filtered results to Excel (.xlsx)" disabled>📥 Export Excel</button>
             <button id="grid-maximize-btn" class="btn btn-small btn-expand-pane" title="Maximize Table View">⛶ Expand Table</button>
@@ -209,17 +214,6 @@
               </div>
             </div>
 
-            <details class="correlation-collapsible" open>
-              <summary class="correlation-summary-toggle">
-                <span class="correlation-summary-title">📂 Evidence Workspace Files</span>
-                <span id="correlation-file-count" class="correlation-count-badge">0 open files</span>
-                <span class="correlation-toggle-hint">(click a file to switch active grid view)</span>
-              </summary>
-              <div id="correlation-files-list" class="correlation-files-list">
-                <div class="correlation-empty-state">No files open. Use "Open File" or "Open Folder" to load evidence files.</div>
-              </div>
-            </details>
-
             <!-- Time Range & Input Grid -->
             <div class="hunting-workbench-grid">
               <!-- Left: Timeframe Parameters -->
@@ -304,46 +298,61 @@
         </div>
       </div>
 
-      <!-- TAB 2: AI Analyst -->
-      <div id="tab-analyst" class="tab-pane" role="tabpanel" style="display:none !important;">
+      <!-- TAB 2: AI Evidence Assistant -->
+      <div id="tab-analyst" class="tab-pane" role="tabpanel">
         <div class="pane-header">
           <div class="pane-title-group">
-            <h2 class="pane-title">AI Forensic Analyst (offline Qwen2.5-3B)</h2>
-            <span class="offline-badge">On-device Private</span>
+            <h2 class="pane-title">AI Evidence Assistant</h2>
+            <span class="offline-badge">Hybrid Forensic Assistant</span>
           </div>
           <div class="pane-actions">
-            <button id="analyst-maximize-btn" class="btn btn-small btn-expand-pane" title="Maximize AI View">⛶ Expand</button>
+            <button id="analyst-maximize-btn" class="btn btn-small btn-expand-pane" title="Maximize Assistant View">⛶ Expand</button>
           </div>
         </div>
         <div class="analyst-scroll-area">
-          <section id="ai-search-workspace" class="ai-search-workspace" aria-labelledby="ai-search-heading">
-            <div class="ai-search-heading-row">
-              <div>
-                <h1 id="ai-search-heading" style="display:none">AI analyst (offline)</h1>
-                <p>Ask anything: &ldquo;what is in this file&rdquo;, &ldquo;map this to MITRE&rdquo;, &ldquo;find chained activity&rdquo;, &ldquo;make a report&rdquo; &mdash; or describe evidence to filter the table.</p>
+          <!-- Conversation first; the structured filter workbench remains available as an advanced view. -->
+          <div class="ai-mode-toggle-bar">
+            <button id="ai-subtab-analyze-btn" class="ai-mode-btn active" type="button">
+              <span class="ai-mode-icon">💬</span> Ask the Evidence
+              <span id="ai-analyze-mode-pill" class="ai-mode-pill local">Local gpt-oss / Cloud BYOK</span>
+            </button>
+            <button id="ai-subtab-find-btn" class="ai-mode-btn" type="button">
+              <span class="ai-mode-icon">🔍</span> Advanced Search
+              <span id="ai-find-mode-pill" class="ai-mode-pill offline">Deterministic Offline</span>
+            </button>
+          </div>
+
+          <!-- SUBMODE A: Find Evidence (Offline / Local AI) -->
+          <section id="ai-mode-find" class="ai-mode-pane hidden" aria-labelledby="ai-find-heading">
+            <div class="ai-submode-banner">
+              <div class="ai-submode-banner-info">
+                <span id="ai-find-model-badge" class="ai-provider-badge-local">Model: <strong>Deterministic Offline</strong></span>
+                <span class="ai-privacy-badge-local">🛡️ Offline &mdash; no evidence leaves this device</span>
               </div>
+              <p class="ai-submode-desc">Translates natural forensic questions into structured filters to find and retrieve matching evidence in the grid without network or cloud calls.</p>
             </div>
+
             <div class="guided-search-wrapper" style="position: relative; width: 100%;">
               <form id="guided-search-form" class="guided-search-form">
                 <label for="guided-search-box" class="sr-only">Describe evidence to find</label>
                 <input id="guided-search-box" type="search" maxlength="4096" placeholder="Example: what is in this file? &mdash; or: failed logons for alice chronologically" disabled autocomplete="off" />
-                <button id="guided-search-submit" class="btn btn-primary" disabled>Ask AI</button>
+                <button id="guided-search-submit" class="btn btn-primary" disabled>Find Evidence</button>
                 <button id="guided-reset-btn" type="button" class="btn hidden">Clear AI search</button>
               </form>
 
               <div id="suggested-prompts-popover" class="suggested-prompts-popover hidden">
                 <div class="suggested-prompts-header">
                   <div class="suggested-prompts-title">
-                    <span>💡 Suggested Prompts</span>
-                    <span class="suggested-prompts-hint">Click a prompt to ask immediately, or check multiple boxes to combine them</span>
+                    <span>💡 Suggested Search Queries</span>
+                    <span class="suggested-prompts-hint">Click a query to execute search, or check multiple boxes to combine them</span>
                   </div>
-                  <button id="close-suggested-prompts-btn" type="button" class="btn-close-popover" title="Close suggested prompts">&times;</button>
+                  <button id="close-suggested-prompts-btn" type="button" class="btn-close-popover" title="Close suggested queries">&times;</button>
                 </div>
 
                 <div id="suggested-multi-actions" class="suggested-multi-actions hidden">
-                  <span id="suggested-selected-count" class="suggested-selected-count">0 prompts selected</span>
+                  <span id="suggested-selected-count" class="suggested-selected-count">0 queries selected</span>
                   <div style="display:flex; gap:8px; margin-left:auto;">
-                    <button id="run-combined-prompts-btn" type="button" class="btn btn-primary btn-small">🚀 Run Combined Prompts</button>
+                    <button id="run-combined-prompts-btn" type="button" class="btn btn-primary btn-small">🚀 Run Combined Search</button>
                     <button id="clear-selected-prompts-btn" type="button" class="btn btn-small">Clear</button>
                   </div>
                 </div>
@@ -362,11 +371,11 @@
                       </label>
                       <label class="suggested-item" data-prompt="summarize suspicious activity">
                         <input type="checkbox" class="prompt-select-cb" value="summarize suspicious activity" />
-                        <span class="prompt-text">Summarize suspicious activity</span>
+                        <span class="prompt-text">Find suspicious activity</span>
                       </label>
                       <label class="suggested-item" data-prompt="make an executive summary report">
                         <input type="checkbox" class="prompt-select-cb" value="make an executive summary report" />
-                        <span class="prompt-text">Make executive summary report</span>
+                        <span class="prompt-text">Overview of activity</span>
                       </label>
                     </div>
                   </div>
@@ -457,17 +466,18 @@
                 </div>
               </div>
             </div>
+
             <div class="quick-prompts-bar">
-              <span style="font-size: 11.5px; color: var(--text-muted); font-weight: 600;">Quick Prompts:</span>
+              <span style="font-size: 11.5px; color: var(--text-muted); font-weight: 600;">Quick Searches:</span>
               <button type="button" class="prompt-chip" data-prompt="what is in this file?">What is in this file?</button>
               <button type="button" class="prompt-chip" data-prompt="show me exfiltration in all files">📤 Exfiltration</button>
               <button type="button" class="prompt-chip" data-prompt="show me communication in all files">📡 Communication</button>
               <button type="button" class="prompt-chip" data-prompt="map this to MITRE ATT&amp;CK">Map to MITRE</button>
               <button type="button" class="prompt-chip" data-prompt="find chained activity and anomalies">Find anomalies &amp; chains</button>
-              <button type="button" class="prompt-chip" data-prompt="summarize suspicious activity">Suspicious activity</button>
+              <button type="button" class="prompt-chip" data-prompt="powershell execution and encoded commands">PowerShell execution</button>
               <button type="button" class="prompt-chip" data-prompt="timeline of suspicious events">⏱️ Timeline</button>
-              <button type="button" class="prompt-chip" data-prompt="make an executive summary report">Make report</button>
             </div>
+
             <div id="timeline-generator-card" class="timeline-generator-card">
               <div class="timeline-generator-header">
                 <span class="timeline-generator-title">⏱️ Timeline Generator</span>
@@ -478,40 +488,176 @@
                 <button id="timeline-generate-btn" type="submit" class="btn btn-secondary" disabled>⏱️ Generate Timeline</button>
               </form>
             </div>
+
             <div id="ai-search-availability" class="ai-search-availability" aria-live="polite">Import a file to search its evidence.</div>
             <div id="semantic-index-status" class="semantic-index-status">Semantic matching starts automatically after import.</div>
+
+            <section id="guided-query-panel" class="intel-panel guided-query-panel hidden" aria-live="polite">
+              <div class="intel-panel-header">
+                <strong>AI search needs attention</strong>
+                <button id="guided-panel-close" class="btn btn-small" title="Dismiss message" aria-label="Dismiss AI search message">&times;</button>
+              </div>
+              <div id="guided-ai-status" class="guided-ai-status hidden"></div>
+              <div id="guided-preview-text" class="intel-panel-body"></div>
+              <div id="guided-clarification" class="intel-panel-note hidden"></div>
+              <div class="intel-panel-actions">
+                <button id="guided-run-btn" class="btn btn-primary hidden">Search evidence</button>
+                <button id="guided-reject-btn" class="btn hidden">Reject interpretation</button>
+              </div>
+            </section>
           </section>
 
-          <section id="analyst-panel" class="intel-panel analyst-panel hidden" aria-live="polite">
-            <div class="intel-panel-header">
-              <strong id="analyst-headline">AI analyst</strong>
-              <button id="analyst-panel-close" class="btn btn-small" title="Dismiss analyst answer" aria-label="Dismiss analyst answer">&times;</button>
+          <!-- SUBMODE B: Analyze Evidence (Local gpt-oss / Cloud BYOK) -->
+          <section id="ai-mode-analyze" class="ai-mode-pane" aria-labelledby="ai-analyze-heading">
+            <!-- Explicit Provider Choice -->
+            <div class="ai-provider-selector-bar">
+              <span class="ai-provider-selector-label">Inference Provider:</span>
+              <div class="ai-provider-options">
+                <label class="ai-provider-radio-label">
+                  <input type="radio" name="ai-analyze-provider" id="ai-provider-local-radio" value="local" checked />
+                  <span class="ai-radio-text">🖥️ Local gpt-oss (Offline)</span>
+                </label>
+                <label class="ai-provider-radio-label">
+                  <input type="radio" name="ai-analyze-provider" id="ai-provider-gemini-radio" value="gemini" />
+                  <span class="ai-radio-text">☁️ Google Gemini (Cloud BYOK)</span>
+                </label>
+              </div>
             </div>
-            <div id="analyst-status" class="intel-panel-note hidden"></div>
-            <div id="analyst-sections" class="intel-panel-body analyst-sections"></div>
-            <div id="analyst-steps" class="analyst-steps hidden"></div>
-            <div class="intel-panel-actions">
-              <button id="analyst-report-btn" class="btn btn-primary hidden">Generate report&hellip;</button>
-            </div>
-          </section>
 
-          <section id="guided-query-panel" class="intel-panel guided-query-panel hidden" aria-live="polite">
-            <div class="intel-panel-header">
-              <strong>AI search needs attention</strong>
-              <button id="guided-panel-close" class="btn btn-small" title="Dismiss message" aria-label="Dismiss AI search message">&times;</button>
+            <!-- Local Model Bar (shown when local provider selected) -->
+            <div id="ai-local-model-bar" class="ai-analyze-model-bar">
+              <div class="ai-analyze-model-info">
+                <span class="ai-provider-label">Provider: <strong>Local llama-server</strong></span>
+                <span class="ai-model-label">Model: <code id="ai-local-model-name">gpt-oss-20b</code> (MXFP4)</span>
+                <span id="ai-local-runtime-badge" class="ai-verify-badge unverified">Checking runtime...</span>
+              </div>
+              <div class="ai-analyze-model-actions">
+                <button id="ai-start-runtime-btn" class="btn btn-small" type="button" title="Start local AI runtime">⚡ Start Runtime</button>
+                <button id="ai-open-settings-local-btn" class="btn btn-small" type="button">⚙️ Manage Model</button>
+              </div>
             </div>
-            <div id="guided-ai-status" class="guided-ai-status hidden"></div>
-            <div id="guided-preview-text" class="intel-panel-body"></div>
-            <div id="guided-clarification" class="intel-panel-note hidden"></div>
-            <div class="intel-panel-actions">
-              <button id="guided-run-btn" class="btn btn-primary hidden">Search evidence</button>
-              <button id="guided-reject-btn" class="btn hidden">Reject interpretation</button>
+
+            <!-- Gemini Model & Verification Bar (shown when gemini selected) -->
+            <div id="ai-gemini-model-bar" class="ai-analyze-model-bar hidden">
+              <div class="ai-analyze-model-info">
+                <span class="ai-provider-label">Provider: <strong>Google Gemini BYOK</strong></span>
+                <span class="ai-model-label">Selected Model: <code id="ai-active-model-name">gemini-2.5-flash</code></span>
+                <span id="ai-verification-badge" class="ai-verify-badge unverified">⚪ Unverified (Test required)</span>
+              </div>
+              <div class="ai-analyze-model-actions">
+                <button id="ai-test-model-btn" class="btn btn-small" type="button" title="Send minimal test ping to verify exact API key and model combination">🧪 Test selected model</button>
+                <button id="ai-open-settings-btn" class="btn btn-small" type="button">⚙️ Settings</button>
+              </div>
+            </div>
+
+            <!-- Cloud Disclosure Notice -->
+            <div id="ai-cloud-notice-banner" class="ai-cloud-notice-banner hidden">
+              <span class="notice-icon">⚠️</span>
+              <div class="notice-text">
+                <strong>Forensic Cloud BYOK Analysis:</strong> Selected evidence is transmitted to Google Gemini exclusively after you click <em>"Send to Gemini"</em> and approve the transfer confirmation. No evidence is sent automatically when opening this tab or selecting rows.
+              </div>
+            </div>
+
+            <!-- Selected Evidence Section -->
+            <div id="ai-staged-empty-warning" class="ai-empty-staged-box">
+              <div class="ai-empty-staged-icon">📋</div>
+              <div class="ai-empty-staged-text">
+                <h4>No Evidence Selected for AI Analysis</h4>
+                <p>Ask a targeted question below, or select rows to discuss them directly. Whole-file summaries and timelines require an explicit row selection so the assistant never silently samples your evidence.</p>
+                <button id="ai-stage-selection-btn" class="btn btn-small btn-secondary hidden" type="button" tabindex="-1">Analyze Selected Grid Rows</button>
+              </div>
+            </div>
+
+            <div id="ai-selection-scope-card" class="ai-staged-card ai-selection-scope-card hidden">
+              <div class="ai-staged-card-header">
+                <div class="ai-staged-meta">
+                  <span class="ai-staged-count-badge">🎯 <strong id="ai-selection-scope-count">0</strong> rows selected for AI analysis</span>
+                  <span class="ai-staged-scope-badge">📁 Files: <strong id="ai-selection-scope-files">None</strong></span>
+                </div>
+                <div class="ai-staged-actions">
+                  <button id="ai-clear-scope-btn" class="btn btn-small" type="button" title="Remove the selected rows from AI analysis">🗑️ Clear Selection</button>
+                </div>
+              </div>
+              <div class="ai-limits-hint">
+                Every selected row will be read in bounded chunks, in selection order. No rows outside the selection are included, and coverage is reported explicitly.
+              </div>
+            </div>
+
+            <div id="ai-staged-summary-card" class="ai-staged-card hidden">
+              <div class="ai-staged-card-header">
+                <div class="ai-staged-meta">
+                  <span class="ai-staged-count-badge">📦 <strong id="ai-staged-rows-count">0</strong> rows selected</span>
+                  <span class="ai-staged-cols-badge">📊 <strong id="ai-staged-cols-count">0</strong> columns</span>
+                  <span class="ai-staged-scope-badge">📁 Files: <strong id="ai-staged-files-scope">None</strong></span>
+                  <span class="ai-staged-size-badge">💾 <strong id="ai-staged-payload-size">0 KB</strong></span>
+                </div>
+                <div class="ai-staged-actions">
+                  <button id="ai-preview-payload-btn" class="btn btn-small" type="button" title="Inspect the exact selected-row JSON payload">👁️ Inspect Payload</button>
+                  <button id="ai-clear-staged-btn" class="btn btn-small" type="button" title="Remove selected evidence">🗑️ Clear Selection</button>
+                </div>
+              </div>
+              <div class="ai-limits-hint">
+                <span>Every selected row is included with file, sheet, source row #, and timestamp provenance. Larger selections are processed automatically in bounded, ordered chunks.</span>
+              </div>
+            </div>
+
+            <!-- One compact prompt chooser replaces the previous wall of buttons. -->
+            <div class="ai-prompt-templates-bar">
+              <label class="templates-label" for="ai-prompt-template-select">Prompt idea:</label>
+              <select id="ai-prompt-template-select" class="ai-prompt-template-select">
+                <option value="">Choose an optional starting point...</option>
+                <option value="explain">Explain this evidence</option>
+                <option value="summarize">Summarize the activity</option>
+                <option value="iocs">Extract IOCs</option>
+                <option value="mitre">Map to MITRE ATT&amp;CK</option>
+                <option value="timeline">Find attacks and build timeline</option>
+                <option value="deobfuscate">Deobfuscate commands</option>
+                <option value="inconsistencies">Find inconsistencies</option>
+              </select>
+            </div>
+
+            <!-- Editable Prompt Textarea -->
+            <div class="ai-prompt-area">
+              <label for="ai-analyze-prompt-input" class="sr-only">Forensic Analysis Prompt</label>
+              <textarea id="ai-analyze-prompt-input" rows="5" placeholder="Ask a question about the evidence. Press Enter to send; Shift+Enter adds a new line."></textarea>
+            </div>
+
+            <!-- Action Bar -->
+            <div class="ai-analyze-action-bar">
+              <button id="ai-send-gemini-btn" class="btn btn-primary" type="button" disabled>
+                Ask AI
+              </button>
+              <button id="ai-cancel-batch-btn" class="btn btn-secondary hidden" type="button">
+                Cancel after current chunk
+              </button>
+              <div id="ai-analyze-status" class="ai-analyze-status" aria-live="polite"></div>
+            </div>
+
+            <!-- Conversation Context Notice -->
+            <div id="ai-conversation-notice" class="ai-conversation-notice hidden"></div>
+
+            <!-- Analysis Results & Multi-Turn Conversation Card -->
+            <div id="ai-analysis-results-card" class="ai-results-card hidden">
+              <div class="ai-results-header">
+                <div class="ai-results-title-group">
+                  <span id="ai-results-title" class="ai-results-title">AI Grounded Analysis</span>
+                  <span id="ai-results-meta" class="ai-results-meta"></span>
+                </div>
+                <div class="ai-results-actions">
+                  <button id="ai-new-conversation-btn" class="btn btn-small btn-secondary" type="button" title="Start a fresh conversation and clear history">➕ New Conversation</button>
+                  <button id="ai-export-attack-timeline-btn" class="btn btn-small hidden" type="button" title="Export the AI-cited attack evidence as a multi-sheet Master Timeline workbook">📥 Export Attack Timeline (.xlsx)</button>
+                  <button id="ai-copy-results-btn" class="btn btn-small" type="button" title="Copy output to clipboard">📋 Copy Output</button>
+                  <button id="ai-close-results-btn" class="btn btn-small" type="button" title="Close results">✕</button>
+                </div>
+              </div>
+              <div id="ai-conversation-transcript" class="ai-conversation-transcript"></div>
+              <div id="ai-analysis-results-content" class="ai-results-content"></div>
             </div>
           </section>
         </div>
       </div>
 
-            <!-- TAB 3: Extracted IOCs (Multi-File) -->
+      <!-- TAB 3: Extracted IOCs (Multi-File) -->
       <div id="tab-iocs" class="tab-pane" role="tabpanel">
         <div class="pane-header">
           <div class="pane-title-group">
@@ -656,7 +802,7 @@
             <div id="timezone-summary" class="intel-panel-body"></div>
             <div id="timezone-samples" class="intel-panel-note hidden"></div>
             <div class="timezone-controls">
-              <input id="timezone-input" type="text" placeholder="UTC offset or IANA timezone, e.g. +02:00 or Europe/Bucharest" />
+              <input id="timezone-input" type="text" placeholder="Timezone, e.g. America/Los_Angeles, PDT, or -07:00" />
               <label id="date-convention-wrap" class="hidden" for="date-convention-select">
                 Slash-date order
                 <select id="date-convention-select">
@@ -671,7 +817,7 @@
           </section>
         </div>
       </div>
-    
+
       <!-- Parse Failures & Audit Modal -->
       <div id="u-audit-modal" class="shortcuts-modal hidden" role="dialog" aria-modal="true">
         <div class="shortcuts-modal-card" style="max-width:800px; width:90%;">
@@ -849,17 +995,68 @@
   </div>
   <div id="shortcuts-modal-backdrop" class="shortcuts-modal-backdrop hidden"></div>
 
-  <!-- Settings & Gemini AI Modal -->
+  <!-- AI Selected Evidence Payload Preview Modal -->
+  <div id="ai-payload-modal" class="shortcuts-modal hidden" role="dialog" aria-modal="true" aria-labelledby="ai-payload-modal-title">
+    <div class="shortcuts-modal-card" style="max-width: 820px; width: 90%;">
+      <div class="shortcuts-modal-header">
+        <div class="shortcuts-modal-title-group">
+          <span class="shortcuts-modal-badge" style="background:#6366f1; color:#fff;">Selected Rows</span>
+          <h3 id="ai-payload-modal-title">Selected Evidence Payload</h3>
+        </div>
+        <button id="ai-payload-modal-close" class="btn btn-small btn-icon" title="Close (Esc)">✕</button>
+      </div>
+      <div class="shortcuts-modal-body" style="padding: 16px;">
+        <div id="ai-payload-modal-description" style="font-size: 12px; color: var(--text-muted); margin-bottom: 8px;">
+          Review the exact selected-row JSON. Opening this preview never sends evidence anywhere.
+        </div>
+        <pre id="ai-payload-preview-text" style="max-height: 420px; overflow: auto; background: var(--bg); padding: 12px; border: 1px solid var(--border); font-size: 11px; border-radius: 4px; font-family: monospace; white-space: pre-wrap; word-break: break-all;"></pre>
+      </div>
+      <div class="shortcuts-modal-footer" style="padding: 12px 16px; display: flex; justify-content: flex-end;">
+        <button id="ai-payload-modal-dismiss" class="btn btn-secondary btn-small" type="button">Close</button>
+      </div>
+    </div>
+  </div>
+  <div id="ai-payload-backdrop" class="shortcuts-modal-backdrop hidden"></div>
+
+  <!-- Settings & AI Modal -->
   <div id="settings-modal" class="shortcuts-modal hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
-    <div class="shortcuts-modal-card" style="max-width: 540px; width: 90%;">
+    <div class="shortcuts-modal-card" style="max-width: 720px; width: 92%;">
       <div class="shortcuts-modal-header">
         <div class="shortcuts-modal-title-group">
           <span class="shortcuts-modal-badge" style="background:#4f46e5; color:#fff;">Configuration</span>
-          <h3 id="settings-modal-title">Settings &amp; Gemini AI</h3>
+          <h3 id="settings-modal-title">AI Settings</h3>
         </div>
         <button id="settings-modal-close-btn" class="btn btn-small btn-icon" title="Close (Esc)">✕</button>
       </div>
       <div class="shortcuts-modal-body" style="padding: 16px;">
+        <section class="local-ai-settings-card" aria-labelledby="local-ai-settings-title">
+          <div class="local-ai-settings-heading">
+            <div>
+              <h4 id="local-ai-settings-title">Offline AI — gpt-oss-20b</h4>
+              <p>Optional post-install model for local evidence interpretation. The application remains fully usable without it.</p>
+            </div>
+            <span id="local-ai-model-state" class="local-ai-state-badge not-installed">Checking…</span>
+          </div>
+          <div class="local-ai-requirements">
+            <span><strong>Download:</strong> 12.1 GB</span>
+            <span><strong>Recommended memory:</strong> 16 GB+</span>
+            <span><strong>Format:</strong> MXFP4 GGUF</span>
+            <span><strong>License:</strong> Apache-2.0</span>
+          </div>
+          <p id="local-ai-model-detail" class="local-ai-model-detail">Checking the local model installation…</p>
+          <div id="local-ai-progress-wrap" class="local-ai-progress-wrap hidden" aria-live="polite">
+            <div class="local-ai-progress-track"><div id="local-ai-progress-fill" class="local-ai-progress-fill"></div></div>
+            <span id="local-ai-progress-text">0%</span>
+          </div>
+          <div class="local-ai-settings-actions">
+            <button id="local-ai-download-btn" class="btn btn-small btn-primary" type="button">Download Offline AI</button>
+            <button id="local-ai-cancel-btn" class="btn btn-small hidden" type="button">Cancel Download</button>
+            <button id="local-ai-remove-btn" class="btn btn-small hidden" type="button">Remove Model</button>
+          </div>
+          <p class="local-ai-integrity-note">The model is downloaded from the official ggml-org repository, streamed to a partial file, and activated only after its published SHA-256 checksum is verified. No evidence is uploaded during local analysis.</p>
+        </section>
+
+        <div class="ai-settings-divider"><span>Cloud provider (optional)</span></div>
         <div style="margin-bottom: 16px;">
           <label style="font-weight: 600; display: block; margin-bottom: 6px;">Gemini API Key</label>
           <div style="display: flex; gap: 8px;">
@@ -867,7 +1064,7 @@
             <button id="gemini-toggle-key-visibility" class="btn btn-small" type="button">👁</button>
           </div>
           <span style="display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px;">
-            Get a key from Google AI Studio. If left empty, the tool runs in 100% offline forensic mode.
+            The key is kept only in session storage and is cleared when the application session ends. It is never written to localStorage. If left empty, the tool runs in 100% offline forensic mode.
           </span>
         </div>
         <div style="margin-bottom: 16px;">
@@ -898,6 +1095,9 @@
           </div>
           <input id="gemini-custom-model-input" type="text" placeholder="Or type any model ID (e.g. gemini-2.5-pro) — overrides the list" style="width: 100%; margin-top: 6px; padding: 6px 10px; font-family: monospace; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); color: var(--text); box-sizing: border-box;" />
           <span id="gemini-models-hint" style="display: block; font-size: 11px; color: var(--text-muted); margin-top: 4px;">Click "Load from key" to list every model your key can access.</span>
+          <div style="margin-top: 8px; display: flex; gap: 8px;">
+            <button id="gemini-test-model-btn" class="btn btn-small" type="button" title="Perform a minimal live test against this exact model ID">🧪 Test selected model</button>
+          </div>
         </div>
         <div id="gemini-status-indicator" style="padding: 8px 12px; border-radius: 4px; background: var(--panel-subtle); border: 1px solid var(--border); font-size: 12px; display: flex; align-items: center; gap: 8px;">
           <span id="gemini-status-dot" style="display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #9ca3af;"></span>

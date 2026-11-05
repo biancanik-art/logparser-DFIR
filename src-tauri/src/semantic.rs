@@ -12,7 +12,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokenizers::{PaddingParams, PaddingStrategy, Tokenizer, TruncationParams};
 
 pub const MODEL_RESOURCE_PATH: &str = "models/all-minilm-l6-v2-model.safetensors";
@@ -38,6 +38,8 @@ const MAX_TOKENS: usize = 256;
 const MAX_QUERY_CHARS: usize = 4_096;
 const MAX_TOP_K: usize = 1_000;
 const EMBEDDING_DIMENSIONS: usize = 384;
+const V2_SELECTION_RANKING_BUDGET: Duration = Duration::from_secs(5);
+const V2_SELECTION_BUDGET_CHECK_INTERVAL: usize = 256;
 static V2_WORKER_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
 pub struct SemanticModel {
@@ -5041,6 +5043,7 @@ fn rank_semantic_documents<E: SemanticEmbedder + ?Sized>(
     query: &str,
     policy: SemanticSearchPolicy,
 ) -> Result<(Vec<ScoredDocument>, usize)> {
+    let ranking_started = Instant::now();
     let query = query.trim();
     if query.is_empty() {
         bail!("semantic search query is empty");
@@ -5062,6 +5065,12 @@ fn rank_semantic_documents<E: SemanticEmbedder + ?Sized>(
     // available to the independent FTS/structured branches.
     let normalized_query = semantic_query_input(query);
     let query_embedding = embedder.embed(&normalized_query)?;
+    if ranking_started.elapsed() >= V2_SELECTION_RANKING_BUDGET {
+        bail!(
+            "semantic candidate ranking exceeded its {}-second safety budget before document scoring; no partial semantic results were used",
+            V2_SELECTION_RANKING_BUDGET.as_secs()
+        );
+    }
     let mut heap: BinaryHeap<Reverse<ScoredDocument>> =
         BinaryHeap::with_capacity(maximum_documents + 1);
     let mut above_threshold = 0usize;
@@ -5074,7 +5083,15 @@ fn rank_semantic_documents<E: SemanticEmbedder + ?Sized>(
          )",
     )?;
     let mut rows = stmt.query([build_id])?;
+    let mut documents_scanned = 0usize;
     while let Some(row) = rows.next()? {
+        documents_scanned += 1;
+        if semantic_ranking_budget_exhausted(ranking_started, documents_scanned) {
+            bail!(
+                "semantic candidate ranking exceeded its {}-second safety budget after scanning {documents_scanned} documents; no partial semantic results were used",
+                V2_SELECTION_RANKING_BUDGET.as_secs()
+            );
+        }
         let doc_id: i64 = row.get(0)?;
         let blob: Vec<u8> = row.get(1)?;
         let score = dot_blob(&query_embedding, &blob)?;
@@ -5101,6 +5118,11 @@ fn rank_semantic_documents<E: SemanticEmbedder + ?Sized>(
             .then_with(|| left.doc_id.cmp(&right.doc_id))
     });
     Ok((documents, above_threshold))
+}
+
+fn semantic_ranking_budget_exhausted(started: Instant, documents_scanned: usize) -> bool {
+    documents_scanned % V2_SELECTION_BUDGET_CHECK_INTERVAL == 0
+        && started.elapsed() >= V2_SELECTION_RANKING_BUDGET
 }
 
 fn query_sha256(query: &str) -> String {
@@ -5683,6 +5705,25 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
     use std::sync::{Arc, Barrier, Mutex};
+
+    #[test]
+    fn semantic_selection_ranking_budget_is_checked_in_bounded_intervals() {
+        let expired = Instant::now()
+            .checked_sub(V2_SELECTION_RANKING_BUDGET + Duration::from_millis(1))
+            .unwrap();
+        assert!(semantic_ranking_budget_exhausted(
+            expired,
+            V2_SELECTION_BUDGET_CHECK_INTERVAL
+        ));
+        assert!(!semantic_ranking_budget_exhausted(
+            expired,
+            V2_SELECTION_BUDGET_CHECK_INTERVAL - 1
+        ));
+        assert!(!semantic_ranking_budget_exhausted(
+            Instant::now(),
+            V2_SELECTION_BUDGET_CHECK_INTERVAL
+        ));
+    }
 
     #[derive(Default)]
     struct FakeEmbedder {

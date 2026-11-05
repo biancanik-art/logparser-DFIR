@@ -1,3 +1,4 @@
+pub mod cloud_ai;
 pub mod commands;
 pub mod csv_import;
 pub mod db;
@@ -5,6 +6,8 @@ pub mod excel_import;
 pub mod export;
 pub mod header_utils;
 pub mod intel;
+pub mod local_ai_manager;
+pub mod local_ai_runtime;
 pub mod query;
 pub mod report;
 pub mod semantic;
@@ -20,7 +23,7 @@ use tauri::{path::BaseDirectory, Manager};
 #[cfg(not(test))]
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let app = tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(AppState::default())
         .setup(|app| {
@@ -86,7 +89,24 @@ pub fn run() {
             commands::get_log_analytics_summary,
             commands::export_forensic_workbook,
             commands::scan_evidence_directory,
+            cloud_ai::gemini_generate,
+            cloud_ai::gemini_test_connection,
+            cloud_ai::gemini_list_models,
+            local_ai_manager::local_ai_model_status,
+            local_ai_manager::local_ai_download_model,
+            local_ai_manager::local_ai_cancel_download,
+            local_ai_manager::local_ai_remove_model,
+            local_ai_runtime::local_ai_runtime_status,
+            local_ai_runtime::local_ai_runtime_start,
+            local_ai_runtime::local_ai_runtime_stop,
+            local_ai_runtime::local_ai_analyze_evidence,
         ])
-        .run(tauri::generate_context!())
+        .build(tauri::generate_context!())
         .expect("error while running tauri application");
+
+    app.run(|_app_handle, event| {
+        if matches!(event, tauri::RunEvent::Exit) {
+            let _ = local_ai_runtime::GLOBAL_SUPERVISOR.stop();
+        }
+    });
 }

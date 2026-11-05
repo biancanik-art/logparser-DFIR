@@ -1,6 +1,6 @@
 //! DFIR / SOC Analyst End-to-End Evaluation Suite
 use log_parser_lib::commands::{
-    cross_ioc_overlap, cross_search_files, export_ioc_overlap_file, FileTarget,
+    cross_ioc_overlap_with_app, cross_search_files, export_ioc_overlap_file, FileTarget,
 };
 use log_parser_lib::db::{self, ColumnMeta};
 use log_parser_lib::header_utils;
@@ -256,7 +256,7 @@ fn test_multi_file_correlation_global_pivot_and_exports() {
         assert_eq!(user_pivot[1].match_count, 1);
         assert_eq!(user_pivot[2].match_count, 2);
 
-        let ioc_overlap = cross_ioc_overlap(files.clone()).await.unwrap();
+        let ioc_overlap = cross_ioc_overlap_with_app(None, files.clone()).await.unwrap();
         assert_eq!(ioc_overlap.files_scanned, 3);
         assert!(ioc_overlap.overlapping_count >= 1);
 

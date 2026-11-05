@@ -108,6 +108,12 @@ impl TimezoneResolver {
         if trimmed.is_empty() {
             bail!("timezone answer cannot be empty");
         }
+        if let Some((offset, label)) = parse_supported_timezone_abbreviation(trimmed) {
+            return Ok(Self::Fixed {
+                offset,
+                label: label.to_string(),
+            });
+        }
         if let Some(offset) = parse_fixed_offset(trimmed) {
             return Ok(Self::Fixed {
                 offset,
@@ -116,7 +122,7 @@ impl TimezoneResolver {
         }
         let timezone = trimmed.parse::<Tz>().map_err(|_| {
             anyhow!(
-                "timezone answer must be UTC, a fixed offset like +02:00, or an IANA name like Europe/Bucharest"
+                "timezone answer must be UTC, PDT (fixed UTC-07:00), a fixed offset like +02:00, or an IANA name like America/Los_Angeles"
             )
         })?;
         Ok(Self::Iana {
@@ -1209,6 +1215,21 @@ fn parse_fixed_offset(value: &str) -> Option<FixedOffset> {
     FixedOffset::east_opt(sign * ((hours * 3600) + (minutes * 60)))
 }
 
+fn parse_supported_timezone_abbreviation(value: &str) -> Option<(FixedOffset, &'static str)> {
+    match value.trim().to_ascii_uppercase().as_str() {
+        // Preserve the examiner's exact daylight/standard-time intent as a fixed offset. An IANA
+        // zone such as America/Los_Angeles remains the correct choice when the evidence spans a
+        // daylight-saving transition.
+        "PDT" => {
+            FixedOffset::west_opt(7 * 3600).map(|offset| (offset, "PDT (UTC-07:00 fixed offset)"))
+        }
+        "PST" => {
+            FixedOffset::west_opt(8 * 3600).map(|offset| (offset, "PST (UTC-08:00 fixed offset)"))
+        }
+        _ => None,
+    }
+}
+
 fn local_result_to_utc<Tz: TimeZone>(
     result: LocalResult<DateTime<Tz>>,
     source_text: &str,
@@ -1464,6 +1485,28 @@ mod tests {
             .unwrap()
             .timestamp_millis();
         assert_eq!(epoch_ms, expected);
+    }
+
+    #[test]
+    fn examiner_pdt_abbreviation_is_audited_as_fixed_utc_minus_seven() {
+        let (mut conn, columns) = setup_with_timestamp(&["2026-10-04 22:12:00"]);
+
+        let summary =
+            normalize_confirmed_timestamp_column(&mut conn, &columns, Some("PDT")).unwrap();
+        assert_eq!(summary.rows_written, 1);
+        assert_eq!(
+            summary.timezone_applied.as_deref(),
+            Some("PDT (UTC-07:00 fixed offset)")
+        );
+
+        let utc_text: String = conn
+            .query_row(
+                "SELECT utc_text FROM _row_time WHERE row_num = 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(utc_text, "2026-10-05T05:12:00Z");
     }
 
     #[test]

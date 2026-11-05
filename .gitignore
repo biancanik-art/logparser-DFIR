@@ -30,3 +30,6 @@ src-tauri/debug_*.txt
 *.lnk
 run.bat
 
+/src-tauri/resources/llama-runtime/
+/src-tauri/resources/llama-cpp-runtime/
+/src-tauri/resources/downloads/

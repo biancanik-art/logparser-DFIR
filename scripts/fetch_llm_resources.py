@@ -27,25 +27,6 @@ INITIAL_RETRY_DELAY_SECONDS = 2
 
 RESOURCES = (
     {
-        "label": "Qwen2.5-3B-Instruct Q3_K_M model",
-        "filename": "qwen2.5-3b-instruct-q3_k_m.gguf",
-        "url": (
-            "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct-GGUF/resolve/"
-            "7dabda4d13d513e3e842b20f0d435c732f172cbe/"
-            "qwen2.5-3b-instruct-q3_k_m.gguf"
-        ),
-        "sha256": "ba8627a48c2bddefac2f995caf7887551304f26a72137fb94b74449121d0df4e",
-    },
-    {
-        "label": "Qwen2.5 tokenizer",
-        "filename": "qwen2.5-1.5b-instruct-tokenizer.json",
-        "url": (
-            "https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct/resolve/"
-            "989aa7980e4cf806f80c7fef2b1adb7bc71aa306/tokenizer.json"
-        ),
-        "sha256": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
-    },
-    {
         "label": "all-MiniLM-L6-v2 semantic-search model",
         "filename": "all-minilm-l6-v2-model.safetensors",
         "url": (
