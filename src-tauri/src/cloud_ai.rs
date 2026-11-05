@@ -107,7 +107,7 @@ fn sanitize_provider_error(message: &str, api_key: &str) -> String {
             .find(|ch: char| ch == '&' || ch.is_whitespace() || ch == '"')
             .map(|offset| value_start + offset)
             .unwrap_or(sanitized.len());
-        sanitized.replace_range(value_start..value_end, "[REDACTED]");
+        sanitized.replace_range(value_start..value_end, "[REDACTED_API_KEY]");
     }
     sanitized
 }
