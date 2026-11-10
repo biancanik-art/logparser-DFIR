@@ -73,6 +73,7 @@ pub fn run() {
             commands::cross_search_batch_files,
             commands::cross_ioc_overlap,
             commands::export_ioc_overlap_file,
+            commands::export_batch_iocs_file,
             commands::export_text_file,
             commands::get_unified_ioc_events,
             commands::get_unified_batch_events,

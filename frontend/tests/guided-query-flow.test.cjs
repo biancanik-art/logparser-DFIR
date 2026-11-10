@@ -1931,3 +1931,88 @@ test("filterGridByIntel switches file when threat hits belong to another single 
   assert.equal(switchedTo, "C:\\data\\other_file.csv");
 });
 
+test("hunt export buttons separate hunted timeline, searched IOCs, and full case workbook", async () => {
+  let exportMultisheetCalls = [];
+  let exportBatchIocsCalls = [];
+  let exportForensicCalls = [];
+
+  const app = bootApp({
+    commandHandlers: {
+      "plugin:dialog|save": async () => "C:\\exports\\output.xlsx",
+      export_unified_multisheet_xlsx: async (payload) => {
+        exportMultisheetCalls.push(payload);
+        return {
+          totalEvents: payload.events.length,
+          sheetsWritten: ["Unified Timeline", "auth.log"],
+        };
+      },
+      export_batch_iocs_file: async (payload) => {
+        exportBatchIocsCalls.push(payload);
+        return payload.results.length;
+      },
+      export_forensic_workbook: async (payload) => {
+        exportForensicCalls.push(payload);
+        return {
+          xlsxPath: payload.destPath,
+          csvTimelinePath: payload.destPath.replace(/\.xlsx$/, ".csv"),
+          totalExported: 42,
+        };
+      },
+    },
+  });
+  await loadFixture(app);
+
+  const timelineBtn = app.document.getElementById("hunting-export-timeline-btn");
+  const iocsBtn = app.document.getElementById("hunting-export-iocs-btn");
+  const fullCaseBtn = app.document.getElementById("cross-batch-export-btn");
+
+  assert.ok(timelineBtn, "hunting-export-timeline-btn exists");
+  assert.ok(iocsBtn, "hunting-export-iocs-btn exists");
+  assert.ok(fullCaseBtn, "cross-batch-export-btn exists");
+
+  // Setup mock hunted events and searched IOCs
+  const mockHuntedEvents = [
+    {
+      fileName: "auth.log",
+      path: "C:\\logs\\auth.log",
+      rowNum: 10,
+      epochMs: 1600000000000,
+      utcText: "2020-09-13 12:26:40",
+      user: "alice",
+      host: "DC01",
+      action: "Logon",
+      details: "4624 success",
+      mitreTags: [],
+      rawFields: {},
+    },
+  ];
+
+  const mockBatchResults = [
+    {
+      indicator: "198.51.100.45",
+      indicatorType: "ip",
+      totalMatches: 5,
+      fileHits: [{ fileName: "firewall.log", path: "C:\\logs\\firewall.log", sheet: "", matchCount: 5, sampleRowNums: [1] }],
+    },
+  ];
+
+  app.debug.setLatestMasterTimelineEventsForTest(mockHuntedEvents);
+  app.debug.setLatestBatchResultsForTest(mockBatchResults);
+
+  // 1. Export Hunted Timeline
+  await app.debug.exportHuntedTimelineForTest();
+  assert.equal(exportMultisheetCalls.length, 1, "export_unified_multisheet_xlsx called");
+  assert.equal(exportMultisheetCalls[0].events.length, 1);
+  assert.equal(exportMultisheetCalls[0].events[0].user, "alice");
+
+  // 2. Export Searched IOCs
+  await app.debug.exportBatchIocsForTest();
+  assert.equal(exportBatchIocsCalls.length, 1, "export_batch_iocs_file called");
+  assert.equal(exportBatchIocsCalls[0].results.length, 1);
+  assert.equal(exportBatchIocsCalls[0].results[0].indicator, "198.51.100.45");
+
+  // 3. Export Full Case Workbook
+  await app.debug.exportBatchForensicWorkbookForTest();
+  assert.equal(exportForensicCalls.length, 1, "export_forensic_workbook called");
+});
+

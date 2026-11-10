@@ -200,7 +200,7 @@
             <button id="correlation-add-folder-btn" class="btn btn-small btn-primary" title="Add full folder of evidence files (+ .jsonl.gz)">📂 Add Folder</button>
             <button id="correlation-add-file-btn" class="btn btn-small" title="Add evidence files">📄 Add Files</button>
             <button id="correlation-analytics-btn" class="btn btn-small" title="View Cloud & JSON Analytics">📊 Cloud &amp; JSON Analytics</button>
-            <button id="correlation-forensic-export-btn" class="btn btn-small" title="Export Master Forensic Report (.xlsx)">📥 Forensic Workbook (.xlsx)</button>
+            <button id="correlation-forensic-export-btn" class="btn btn-small" title="Export all case rows across all loaded files concatenated into a Master Forensic Workbook (.xlsx)">🌐 Full Case Workbook (.xlsx)</button>
             <button id="correlation-refresh-btn" class="btn btn-small" title="Refresh cross-file analysis">🔄 Refresh</button>
             <button id="correlation-maximize-btn" class="btn btn-small btn-expand-pane" title="Maximize View">⤢ Expand</button>
           </div>
@@ -272,8 +272,10 @@
             <!-- Action Bar for Findings -->
             <div id="hunting-actions-bar" class="hidden" style="display:flex; gap:8px; align-items:center; margin-top:12px; padding:10px 14px; background:var(--panel-subtle); border:1px solid var(--border); border-radius:6px; flex-wrap:wrap;">
               <span id="hunting-findings-title" style="font-weight:600; font-size:13px; margin-right:auto;">Master Timeline Ready</span>
-              <button id="batch-view-all-unified-btn" class="btn btn-primary btn-small" type="button">📋 View Master Timeline in Grid</button>
-              <button id="cross-batch-export-btn" class="btn btn-small" type="button" disabled>📥 Export Workbook (.xlsx)</button>
+              <button id="batch-view-all-unified-btn" class="btn btn-primary btn-small" type="button">📋 View in Grid</button>
+              <button id="hunting-export-timeline-btn" class="btn btn-small" type="button" disabled title="Export only the events matching your searched IOCs and timeframe (.xlsx)">🎯 Export Hunted Timeline (.xlsx)</button>
+              <button id="hunting-export-iocs-btn" class="btn btn-small" type="button" disabled title="Export searched indicators summary, hit counts, and participating files (.xlsx)">📋 Export Searched IOCs (.xlsx)</button>
+              <button id="cross-batch-export-btn" class="btn btn-small" type="button" disabled title="Export all rows across all loaded files in the case concatenated together into a Master Forensic Workbook (.xlsx)">🌐 Export Full Case (.xlsx)</button>
               <button id="gemini-generate-narrative-btn" class="btn btn-small btn-gemini-action" type="button">✨ Generate Narrative (Gemini)</button>
             </div>
 

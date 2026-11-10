@@ -3257,6 +3257,137 @@ pub async fn export_ioc_overlap_file(
 }
 
 #[tauri::command]
+pub async fn export_batch_iocs_file(
+    dest_path: String,
+    results: Vec<BatchIndicatorResult>,
+) -> Result<usize, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = PathBuf::from(&dest_path);
+        let ext = path
+            .extension()
+            .and_then(|s| s.to_str())
+            .unwrap_or("xlsx")
+            .to_lowercase();
+
+        let count = results.len();
+
+        match ext.as_str() {
+            "csv" => {
+                let file = std::fs::File::create(&path).map_err(|e| e.to_string())?;
+                let mut writer = csv::Writer::from_writer(std::io::BufWriter::new(file));
+                writer
+                    .write_record([
+                        "Searched Indicator",
+                        "Indicator Type",
+                        "Total Event Hits",
+                        "Status",
+                        "Participating Files Breakdown",
+                    ])
+                    .map_err(|e| e.to_string())?;
+
+                for item in &results {
+                    let status = if item.total_matches > 0 {
+                        format!("Hit across {} file(s)", item.file_hits.len())
+                    } else {
+                        "No Matches Found".to_string()
+                    };
+                    let breakdown = item
+                        .file_hits
+                        .iter()
+                        .map(|fh| format!("{} ({} rows)", fh.file_name, fh.match_count))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+
+                    writer
+                        .write_record([
+                            &item.indicator,
+                            &item.indicator_type,
+                            &item.total_matches.to_string(),
+                            &status,
+                            &breakdown,
+                        ])
+                        .map_err(|e| e.to_string())?;
+                }
+                writer.flush().map_err(|e| e.to_string())?;
+            }
+            "xlsx" => {
+                let mut workbook = rust_xlsxwriter::Workbook::new();
+                let worksheet = workbook.add_worksheet();
+                worksheet
+                    .set_name("Searched Indicators & Hits")
+                    .map_err(|e| e.to_string())?;
+
+                let bold = rust_xlsxwriter::Format::new().set_bold();
+
+                let headers = [
+                    "Searched Indicator",
+                    "Indicator Type",
+                    "Total Event Hits",
+                    "Status",
+                    "Participating Files Breakdown",
+                ];
+
+                for (col, h) in headers.iter().enumerate() {
+                    worksheet
+                        .write_string_with_format(0, col as u16, *h, &bold)
+                        .map_err(|e| e.to_string())?;
+                }
+
+                for (idx, item) in results.iter().enumerate() {
+                    let row = (idx + 1) as u32;
+                    let status = if item.total_matches > 0 {
+                        format!("Hit across {} file(s)", item.file_hits.len())
+                    } else {
+                        "No Matches Found".to_string()
+                    };
+                    let breakdown = item
+                        .file_hits
+                        .iter()
+                        .map(|fh| format!("{} ({} rows)", fh.file_name, fh.match_count))
+                        .collect::<Vec<_>>()
+                        .join("; ");
+
+                    worksheet
+                        .write_string(row, 0, &item.indicator)
+                        .map_err(|e| e.to_string())?;
+                    worksheet
+                        .write_string(row, 1, &item.indicator_type)
+                        .map_err(|e| e.to_string())?;
+                    worksheet
+                        .write_number(row, 2, item.total_matches as f64)
+                        .map_err(|e| e.to_string())?;
+                    worksheet
+                        .write_string(row, 3, &status)
+                        .map_err(|e| e.to_string())?;
+                    worksheet
+                        .write_string(row, 4, &breakdown)
+                        .map_err(|e| e.to_string())?;
+                }
+
+                worksheet.set_column_width(0, 38).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(1, 18).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(2, 18).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(3, 25).map_err(|e| e.to_string())?;
+                worksheet.set_column_width(4, 70).map_err(|e| e.to_string())?;
+                if results.len() <= 5000 {
+                    worksheet.autofit();
+                }
+                workbook.save(&path).map_err(|e| e.to_string())?;
+            }
+            _ => {
+                let json_str =
+                    serde_json::to_string_pretty(&results).map_err(|e| e.to_string())?;
+                std::fs::write(&path, json_str.as_bytes()).map_err(|e| e.to_string())?;
+            }
+        }
+
+        Ok(count)
+    })
+    .await
+    .map_err(|e| format!("export batch iocs task join error: {e}"))?
+}
+
+#[tauri::command]
 pub async fn export_text_file(dest_path: String, content: String) -> Result<(), String> {
     tauri::async_runtime::spawn_blocking(move || {
         let path = PathBuf::from(&dest_path);
@@ -4791,5 +4922,63 @@ mod tests {
 
         let _ = std::fs::remove_file(&db1_path);
         let _ = std::fs::remove_file(&db2_path);
+    }
+
+    #[test]
+    fn test_export_batch_iocs_file_round_trips() {
+        tauri::async_runtime::block_on(async {
+            let temp_dir = std::env::temp_dir().join(format!("batch_ioc_test_{}", std::process::id()));
+            let _ = std::fs::create_dir_all(&temp_dir);
+
+            let results = vec![
+                BatchIndicatorResult {
+                    indicator: "198.51.100.45".to_string(),
+                    indicator_type: "ip".to_string(),
+                    total_matches: 12,
+                    file_hits: vec![
+                        BatchFileHit {
+                            file_name: "firewall.log".to_string(),
+                            sheet: String::new(),
+                            path: "C:/logs/firewall.log".to_string(),
+                            match_count: 10,
+                            sample_row_nums: vec![1, 2],
+                        },
+                        BatchFileHit {
+                            file_name: "auth.log".to_string(),
+                            sheet: String::new(),
+                            path: "C:/logs/auth.log".to_string(),
+                            match_count: 2,
+                            sample_row_nums: vec![5],
+                        },
+                    ],
+                },
+                BatchIndicatorResult {
+                    indicator: "attacker.com".to_string(),
+                    indicator_type: "domain".to_string(),
+                    total_matches: 0,
+                    file_hits: vec![],
+                },
+            ];
+
+            let csv_path = temp_dir.join("test_iocs.csv");
+            let count_csv = export_batch_iocs_file(csv_path.to_string_lossy().to_string(), results.clone())
+                .await
+                .expect("csv export succeeds");
+            assert_eq!(count_csv, 2);
+            let csv_text = std::fs::read_to_string(&csv_path).expect("read csv");
+            assert!(csv_text.contains("198.51.100.45"));
+            assert!(csv_text.contains("attacker.com"));
+            assert!(csv_text.contains("Hit across 2 file(s)"));
+            assert!(csv_text.contains("No Matches Found"));
+
+            let xlsx_path = temp_dir.join("test_iocs.xlsx");
+            let count_xlsx = export_batch_iocs_file(xlsx_path.to_string_lossy().to_string(), results)
+                .await
+                .expect("xlsx export succeeds");
+            assert_eq!(count_xlsx, 2);
+            assert!(xlsx_path.exists());
+
+            let _ = std::fs::remove_dir_all(&temp_dir);
+        });
     }
 }

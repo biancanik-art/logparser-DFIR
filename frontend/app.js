@@ -166,6 +166,8 @@
   const crossBatchImportBtn = document.getElementById("cross-batch-import-btn");
   const crossBatchFileInput = document.getElementById("cross-batch-file-input");
   const crossBatchExportBtn = document.getElementById("cross-batch-export-btn");
+  const huntingExportTimelineBtn = document.getElementById("hunting-export-timeline-btn");
+  const huntingExportIocsBtn = document.getElementById("hunting-export-iocs-btn");
   const crossBatchClearBtn = document.getElementById("cross-batch-clear-btn");
   const crossBatchCountHint = document.getElementById("cross-batch-count-hint");
   const correlationAnalyticsBtn = document.getElementById("correlation-analytics-btn");
@@ -6984,7 +6986,13 @@
       }
 
       if (crossBatchExportBtn) {
-        crossBatchExportBtn.disabled = (timelineEvents.length === 0);
+        crossBatchExportBtn.disabled = (timelineEvents.length === 0 && loadedFiles.length === 0);
+      }
+      if (huntingExportTimelineBtn) {
+        huntingExportTimelineBtn.disabled = (timelineEvents.length === 0);
+      }
+      if (huntingExportIocsBtn) {
+        huntingExportIocsBtn.disabled = (latestBatchResults.length === 0);
       }
       if (correlationForensicExportBtn) {
         correlationForensicExportBtn.disabled = (timelineEvents.length === 0 && loadedFiles.length === 0);
@@ -7025,13 +7033,14 @@
       topBar.style.cssText = "display:flex; align-items:center; justify-content:space-between; margin-bottom:12px; padding:10px 14px; background:var(--panel-subtle); border:1px solid var(--border); border-radius:6px; flex-wrap:wrap; gap:8px;";
       topBar.innerHTML = `
         <span style="font-weight:600; font-size:13px;">🎯 ${matchedItems.length} indicators found in evidence (${totalHitCount.toLocaleString()} hits)</span>
-        <div style="display:flex; gap:8px;">
-          <button id="batch-view-all-unified-btn" class="btn btn-primary btn-small">🌐 View All Batch Hits in Unified Grid</button>
-          <button id="batch-export-btn" class="btn btn-small">📥 Export Forensic Workbook (.xlsx)</button>
+        <div style="display:flex; gap:8px; flex-wrap:wrap;">
+          <button class="btn btn-primary btn-small btn-batch-view-grid">🌐 View All Hits in Grid</button>
+          <button class="btn btn-small btn-batch-export-timeline" title="Export only the events matching these hunted indicators (.xlsx)">🎯 Export Hunted Timeline (.xlsx)</button>
+          <button class="btn btn-small btn-batch-export-iocs" title="Export searched indicators list and hit counts (.xlsx)">📋 Export IOCs & Hits (.xlsx)</button>
         </div>
       `;
 
-      const viewAllUnifiedBtn = topBar.querySelector("#batch-view-all-unified-btn");
+      const viewAllUnifiedBtn = topBar.querySelector(".btn-batch-view-grid");
       if (viewAllUnifiedBtn) {
         viewAllUnifiedBtn.addEventListener("click", async () => {
           const filesPayload = loadedFiles.map((f) => ({
@@ -7059,9 +7068,14 @@
         });
       }
 
-      const batchExportBtn = topBar.querySelector("#batch-export-btn");
-      if (batchExportBtn) {
-        batchExportBtn.addEventListener("click", exportBatchForensicWorkbook);
+      const topBarExportTimelineBtn = topBar.querySelector(".btn-batch-export-timeline");
+      if (topBarExportTimelineBtn) {
+        topBarExportTimelineBtn.addEventListener("click", exportHuntedTimeline);
+      }
+
+      const topBarExportIocsBtn = topBar.querySelector(".btn-batch-export-iocs");
+      if (topBarExportIocsBtn) {
+        topBarExportIocsBtn.addEventListener("click", exportBatchIocs);
       }
 
       crossSearchResults.appendChild(topBar);
@@ -7095,7 +7109,8 @@
           </div>
           <div style="display:flex; align-items:center; gap:8px; margin-left:auto;">
             ${matchBadge}
-            ${isHit ? `<button class="btn btn-small btn-view-indicator-unified" data-indicator="${escapeHtml(item.indicator)}" title="View in chronological Unified Grid">🌐 View in Unified Grid</button>` : ""}
+            ${isHit ? `<button class="btn btn-small btn-view-indicator-unified" data-indicator="${escapeHtml(item.indicator)}" title="View in chronological Unified Grid">🌐 View in Grid</button>` : ""}
+            ${isHit ? `<button class="btn btn-small btn-export-indicator-events" data-indicator="${escapeHtml(item.indicator)}" title="Export only events for this indicator (.xlsx)">📥 Export Events (.xlsx)</button>` : ""}
           </div>
         </div>
         ${filesHtml}
@@ -7128,13 +7143,88 @@
         });
       }
 
+      const exportIndEventsBtn = card.querySelector(".btn-export-indicator-events");
+      if (exportIndEventsBtn) {
+        exportIndEventsBtn.addEventListener("click", async () => {
+          const filesPayload = loadedFiles.map((f) => ({
+            path: f.path,
+            sheet: f.sheet || null,
+            cacheDbPath: f.cacheDbPath || f.summary?.cacheDbPath || null,
+          }));
+          showProgress(`Loading events for "${item.indicator}" to export...`, 0.5);
+          try {
+            const evts = await invoke("get_unified_ioc_events", {
+              files: filesPayload,
+              iocValue: item.indicator,
+            });
+            hideProgress();
+            if (evts && evts.length > 0) {
+              const safeName = item.indicator.replace(/[^a-zA-Z0-9_-]/g, "_");
+              const today = new Date().toISOString().slice(0, 10);
+              await exportUnifiedCorrelatedData("xlsx", evts, `indicator_${safeName}_timeline_${today}`);
+            } else {
+              alert("No events found for this indicator to export.");
+            }
+          } catch (err) {
+            hideProgress();
+            alert(`Export failed: ${err}`);
+          }
+        });
+      }
+
       crossSearchResults.appendChild(card);
     });
   }
 
+  async function exportHuntedTimeline() {
+    if (!latestMasterTimelineEvents || latestMasterTimelineEvents.length === 0) {
+      alert("No hunted timeline events available to export. Run a search or time window query first.");
+      return;
+    }
+    const today = new Date().toISOString().slice(0, 10);
+    await exportUnifiedCorrelatedData(
+      "xlsx",
+      latestMasterTimelineEvents,
+      `hunted_forensic_timeline_${today}`
+    );
+  }
+
+  async function exportBatchIocs() {
+    if (!latestBatchResults || latestBatchResults.length === 0) {
+      alert("No searched indicator results available to export. Enter indicators and run a search first.");
+      return;
+    }
+    try {
+      const today = new Date().toISOString().slice(0, 10);
+      const destPath = await invoke("plugin:dialog|save", {
+        options: {
+          defaultPath: `searched_iocs_and_hits_${today}.xlsx`,
+          filters: [
+            { name: "Excel Workbook (*.xlsx)", extensions: ["xlsx"] },
+            { name: "CSV (Comma Separated) (*.csv)", extensions: ["csv"] },
+            { name: "JSON Data (*.json)", extensions: ["json"] },
+          ],
+        },
+      });
+      if (!destPath) return;
+
+      showProgress(`Exporting ${latestBatchResults.length} searched indicators...`, 0.5);
+      const count = await invoke("export_batch_iocs_file", {
+        destPath,
+        results: latestBatchResults,
+      });
+      hideProgress();
+      alert(`Indicator Export Complete!\n\nSuccessfully wrote ${count} searched indicators to:\n${destPath}`);
+    } catch (err) {
+      hideProgress();
+      console.error("exportBatchIocs error", err);
+      alert(`Export failed: ${err}`);
+    }
+  }
+
   async function exportBatchForensicWorkbook() {
     try {
-      const defaultName = `forensic_investigation_workbook_${new Date().toISOString().slice(0, 10)}.xlsx`;
+      const defaultName = `full_case_forensic_workbook_${new Date().toISOString().slice(0, 10)}.xlsx`;
       const savePath = await invoke("plugin:dialog|save", {
         options: {
           defaultPath: defaultName,
@@ -7142,7 +7232,7 @@
         },
       });
       if (!savePath) return;
-      showProgress("Exporting forensic workbook & timeline across loaded files...", 0.5);
+      showProgress("Exporting full case forensic workbook & timeline across loaded files...", 0.5);
 
       const fileTargets = (loadedFiles || []).map(f => ({
         path: f.path,
@@ -7157,7 +7247,7 @@
         batchResults: (latestBatchResults && latestBatchResults.length > 0) ? latestBatchResults : null,
       });
       hideProgress();
-      alert(`Forensic Workbook Export Complete!\n\nExcel: ${res.xlsxPath}\nCSV Timeline: ${res.csvTimelinePath}\nTotal Records: ${res.totalExported}`);
+      alert(`Full Case Master Workbook Export Complete!\n\nExcel: ${res.xlsxPath}\nCSV Timeline: ${res.csvTimelinePath}\nTotal Records: ${res.totalExported}`);
     } catch (err) {
       hideProgress();
       alert(`Export failed: ${err}`);
@@ -8143,10 +8233,18 @@
       if (crossBatchCountHint) crossBatchCountHint.textContent = "0 indicators detected";
       crossSearchResults.innerHTML = "";
       crossSearchStatus.classList.add("hidden");
-      if (crossBatchExportBtn) crossBatchExportBtn.disabled = true;
+      if (crossBatchExportBtn) crossBatchExportBtn.disabled = (loadedFiles.length === 0);
+      if (huntingExportTimelineBtn) huntingExportTimelineBtn.disabled = true;
+      if (huntingExportIocsBtn) huntingExportIocsBtn.disabled = true;
     });
   }
 
+  if (huntingExportTimelineBtn) {
+    huntingExportTimelineBtn.addEventListener("click", exportHuntedTimeline);
+  }
+  if (huntingExportIocsBtn) {
+    huntingExportIocsBtn.addEventListener("click", exportBatchIocs);
+  }
   if (crossBatchExportBtn) {
     crossBatchExportBtn.addEventListener("click", exportBatchForensicWorkbook);
   }
@@ -9530,6 +9628,21 @@
     },
     exportUnifiedCorrelatedDataForTest(format) {
       return exportUnifiedCorrelatedData(format);
+    },
+    exportHuntedTimelineForTest() {
+      return exportHuntedTimeline();
+    },
+    exportBatchIocsForTest() {
+      return exportBatchIocs();
+    },
+    exportBatchForensicWorkbookForTest() {
+      return exportBatchForensicWorkbook();
+    },
+    setLatestMasterTimelineEventsForTest(evts) {
+      latestMasterTimelineEvents = evts;
+    },
+    setLatestBatchResultsForTest(res) {
+      latestBatchResults = res;
     },
     async filterGridByIntelForTest(filterType, filterValue, displayName) {
       return filterGridByIntel(filterType, filterValue, displayName);
