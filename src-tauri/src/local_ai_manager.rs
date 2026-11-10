@@ -16,7 +16,7 @@ use tauri::{AppHandle, Emitter, Manager};
 
 pub const MODEL_NAME: &str = "gpt-oss-20b";
 pub const MODEL_URL: &str =
-    "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/main/gpt-oss-20b-MXFP4.gguf";
+    "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf";
 pub const EXPECTED_SHA256: &str =
     "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901";
 pub const EXPECTED_MODEL_BYTES: u64 = 12_109_566_624;
@@ -25,6 +25,146 @@ pub const MODEL_LICENSE: &str = "Apache-2.0";
 
 pub const FINAL_FILENAME: &str = "gpt-oss-20b-MXFP4.gguf";
 pub const PARTIAL_FILENAME: &str = "gpt-oss-20b-MXFP4.gguf.part";
+
+/// Typed Model Registry entry for supported local models.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelRegistryEntry {
+    pub id: String,
+    pub display_name: String,
+    pub family: String,
+    pub download_url: String,
+    pub commit_sha: String,
+    pub filename: String,
+    pub byte_size: u64,
+    pub published_size_display: String,
+    pub sha256: String,
+    pub quantization: String,
+    pub license: String,
+    pub model_card_url: String,
+    pub min_ram_gb: u32,
+    pub recommended_ram_gb: u32,
+    pub min_disk_gb: u32,
+    pub context_size: u32,
+    pub max_output_tokens: u32,
+    pub reasoning_format: String,
+    pub jinja: bool,
+    pub directory_name: String,
+    pub alias: String,
+    pub enabled: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub disabled_reason: Option<String>,
+}
+
+/// Returns the official immutable model registry containing pinned artifacts.
+pub fn get_model_registry() -> Vec<ModelRegistryEntry> {
+    vec![
+        ModelRegistryEntry {
+            id: "gpt-oss-20b".to_string(),
+            display_name: "gpt-oss 20B (Local)".to_string(),
+            family: "gpt-oss".to_string(),
+            download_url: "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF/resolve/15dcfc7e7c608c6161507211ed43c5b590801b4b/gpt-oss-20b-MXFP4.gguf".to_string(),
+            commit_sha: "15dcfc7e7c608c6161507211ed43c5b590801b4b".to_string(),
+            filename: "gpt-oss-20b-MXFP4.gguf".to_string(),
+            byte_size: 12_109_566_624,
+            published_size_display: "12.1 GB".to_string(),
+            sha256: "27cd6c432c7672cb812a92f611cf3ba7bbc35928262bb1e1253ff4ee6ae35901".to_string(),
+            quantization: "MXFP4".to_string(),
+            license: "Apache-2.0".to_string(),
+            model_card_url: "https://huggingface.co/ggml-org/gpt-oss-20b-GGUF".to_string(),
+            min_ram_gb: 16,
+            recommended_ram_gb: 32,
+            min_disk_gb: 25,
+            context_size: 16_384,
+            max_output_tokens: 2_048,
+            reasoning_format: "deepseek".to_string(),
+            jinja: true,
+            directory_name: "gpt-oss-20b".to_string(),
+            alias: "gpt-oss-20b".to_string(),
+            enabled: true,
+            disabled_reason: None,
+        },
+        ModelRegistryEntry {
+            id: "granite-4.0-micro-3b".to_string(),
+            display_name: "Granite 4.0 Micro 3B (Local)".to_string(),
+            family: "Granite".to_string(),
+            download_url: "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF/resolve/ec48475f0c811d812fbfb61975717a9c36eeb652/granite-4.0-micro-Q4_K_M.gguf".to_string(),
+            commit_sha: "ec48475f0c811d812fbfb61975717a9c36eeb652".to_string(),
+            filename: "granite-4.0-micro-Q4_K_M.gguf".to_string(),
+            byte_size: 2_099_502_528,
+            published_size_display: "2.1 GB".to_string(),
+            sha256: "97c417dcc0534b0737c74016fb2af083cb17c3b51eaac621192d23961b7024eb".to_string(),
+            quantization: "Q4_K_M".to_string(),
+            license: "Apache-2.0".to_string(),
+            model_card_url: "https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF".to_string(),
+            min_ram_gb: 4,
+            recommended_ram_gb: 8,
+            min_disk_gb: 5,
+            context_size: 32_768,
+            max_output_tokens: 2_048,
+            reasoning_format: "none".to_string(),
+            jinja: true,
+            directory_name: "granite-4.0-micro-3b".to_string(),
+            alias: "granite-4.0-micro-3b".to_string(),
+            enabled: true,
+            disabled_reason: None,
+        },
+        ModelRegistryEntry {
+            id: "ministral-3-8b-instruct".to_string(),
+            display_name: "Ministral 3 8B Instruct (Local)".to_string(),
+            family: "Mistral".to_string(),
+            download_url: "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF/resolve/0102285ad796bd99af90f58de616092e5630e970/Ministral-3-8B-Instruct-2512-Q4_K_M.gguf".to_string(),
+            commit_sha: "0102285ad796bd99af90f58de616092e5630e970".to_string(),
+            filename: "Ministral-3-8B-Instruct-2512-Q4_K_M.gguf".to_string(),
+            byte_size: 5_198_911_904,
+            published_size_display: "5.2 GB".to_string(),
+            sha256: "33e7a72cf5e6e2cfc2f2847075acc013d68bba023e35310cef86b5cf8fdca761".to_string(),
+            quantization: "Q4_K_M".to_string(),
+            license: "Apache-2.0".to_string(),
+            model_card_url: "https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF".to_string(),
+            min_ram_gb: 8,
+            recommended_ram_gb: 16,
+            min_disk_gb: 10,
+            context_size: 32_768,
+            max_output_tokens: 2_048,
+            reasoning_format: "none".to_string(),
+            jinja: true,
+            directory_name: "ministral-3-8b-instruct".to_string(),
+            alias: "ministral-3-8b-instruct".to_string(),
+            enabled: true,
+            disabled_reason: None,
+        },
+    ]
+}
+
+static SELECTED_MODEL_ID: Mutex<Option<String>> = Mutex::new(None);
+
+pub fn get_selected_model_id() -> String {
+    let guard = SELECTED_MODEL_ID.lock().unwrap_or_else(|p| p.into_inner());
+    guard.clone().unwrap_or_else(|| "gpt-oss-20b".to_string())
+}
+
+pub fn set_selected_model_id(id: &str) -> Result<(), String> {
+    if find_model(id).is_none() {
+        return Err(format!("Model ID '{id}' not found in registry"));
+    }
+    let mut guard = SELECTED_MODEL_ID.lock().unwrap_or_else(|p| p.into_inner());
+    *guard = Some(id.to_string());
+    Ok(())
+}
+
+pub fn find_model(id: &str) -> Option<ModelRegistryEntry> {
+    get_model_registry().into_iter().find(|m| {
+        m.id.eq_ignore_ascii_case(id)
+            || m.alias.eq_ignore_ascii_case(id)
+            || m.directory_name.eq_ignore_ascii_case(id)
+    })
+}
+
+pub fn get_selected_model_entry() -> ModelRegistryEntry {
+    let id = get_selected_model_id();
+    find_model(&id).unwrap_or_else(|| get_model_registry().remove(0))
+}
 
 // reqwest 0.12's blocking client exposes a total request timeout rather than an
 // idle-read timeout. The model is 12.1 GB, so a short timeout would make every
@@ -57,6 +197,18 @@ pub struct LocalAiModelStatus {
     pub error_message: Option<String>,
     pub license: String,
     pub published_size: String,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub display_name: String,
+    #[serde(default)]
+    pub min_ram_gb: u32,
+    #[serde(default)]
+    pub recommended_ram_gb: u32,
+    #[serde(default)]
+    pub min_disk_gb: u32,
+    #[serde(default)]
+    pub is_selected: bool,
 }
 
 /// Progress event payload emitted to frontend.
@@ -67,6 +219,10 @@ pub struct LocalAiDownloadProgress {
     pub downloaded_bytes: u64,
     pub total_bytes: u64,
     pub percent: f64,
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub model_id: String,
 }
 
 /// Content-Range parse result.
@@ -137,13 +293,22 @@ pub fn clear_verified_cache() {
     }
 }
 
-/// Resolves the dedicated storage directory for this model under app local data.
+/// Resolves the dedicated storage directory for the selected model under app local data.
 pub fn get_model_dir(app: &AppHandle) -> Result<PathBuf, String> {
+    let selected = get_selected_model_entry();
+    get_model_dir_for(app, &selected.directory_name)
+}
+
+/// Resolves dedicated storage directory for a specific model directory name under app local data.
+pub fn get_model_dir_for(app: &AppHandle, dir_name: &str) -> Result<PathBuf, String> {
+    if dir_name.is_empty() || dir_name.contains('/') || dir_name.contains('\\') || dir_name.contains("..") {
+        return Err(format!("Invalid model directory name: '{dir_name}'"));
+    }
     let local_data = app
         .path()
         .app_local_data_dir()
         .map_err(|e| format!("Failed to resolve app local data directory: {e}"))?;
-    Ok(local_data.join("models").join(MODEL_NAME))
+    Ok(local_data.join("models").join(dir_name))
 }
 
 /// Rejects a model directory that is a symlink or another non-directory file.
@@ -182,7 +347,31 @@ pub fn is_exact_model_file(path: &Path, expected_model_dir: &Path) -> bool {
         None => return false,
     };
 
-    if file_name != FINAL_FILENAME && file_name != PARTIAL_FILENAME {
+    let is_known = file_name == FINAL_FILENAME
+        || file_name == PARTIAL_FILENAME
+        || get_model_registry().iter().any(|m| {
+            let part = format!("{}.part", m.filename);
+            file_name == m.filename || file_name == part
+        });
+
+    if !is_known {
+        return false;
+    }
+
+    match path.parent() {
+        Some(parent) => parent == expected_model_dir,
+        None => false,
+    }
+}
+
+pub fn is_exact_model_file_for(path: &Path, expected_model_dir: &Path, filename: &str) -> bool {
+    let file_name = match path.file_name().and_then(|n| n.to_str()) {
+        Some(n) => n,
+        None => return false,
+    };
+
+    let partial = format!("{filename}.part");
+    if file_name != filename && file_name != partial {
         return false;
     }
 
@@ -576,14 +765,17 @@ pub fn verify_final_file(
     Ok(is_valid)
 }
 
-/// Inspects model status for a specific model directory.
-pub fn get_model_status_for_dir(model_dir: &Path) -> Result<LocalAiModelStatus, String> {
+/// Inspects model status for a specific model entry.
+pub fn get_model_status_for_entry(
+    model_dir: &Path,
+    model: &ModelRegistryEntry,
+) -> Result<LocalAiModelStatus, String> {
     validate_model_directory(model_dir)?;
     let is_downloading = ACTIVE_DOWNLOAD.load(Ordering::SeqCst);
     let is_verifying = IS_VERIFYING.load(Ordering::SeqCst);
 
-    let final_path = model_dir.join(FINAL_FILENAME);
-    let part_path = model_dir.join(PARTIAL_FILENAME);
+    let final_path = model_dir.join(&model.filename);
+    let part_path = model_dir.join(format!("{}.part", model.filename));
 
     let final_len = match validate_regular_model_file(&final_path, model_dir)? {
         Some(length) => length,
@@ -597,17 +789,16 @@ pub fn get_model_status_for_dir(model_dir: &Path) -> Result<LocalAiModelStatus, 
     };
     let part_exists = part_len > 0;
 
-    // Requirement 6: Do not hash an existing final file while status is already Downloading or Verifying.
     let final_sha256_matches = if is_downloading || is_verifying {
         None
     } else if final_exists {
-        if final_len != EXPECTED_MODEL_BYTES {
+        if final_len != model.byte_size {
             Some(false)
         } else {
             Some(verify_final_file(
                 &final_path,
-                EXPECTED_SHA256,
-                EXPECTED_MODEL_BYTES,
+                &model.sha256,
+                model.byte_size,
             )?)
         }
     } else {
@@ -622,7 +813,7 @@ pub fn get_model_status_for_dir(model_dir: &Path) -> Result<LocalAiModelStatus, 
         part_len,
         is_downloading,
         is_verifying,
-        EXPECTED_MODEL_BYTES,
+        model.byte_size,
     );
 
     let (downloaded_bytes, total_bytes, model_path, error_message) = match status {
@@ -642,34 +833,48 @@ pub fn get_model_status_for_dir(model_dir: &Path) -> Result<LocalAiModelStatus, 
             };
             (
                 len,
-                Some(EXPECTED_MODEL_BYTES),
+                Some(model.byte_size),
                 path,
                 Some("Model file SHA-256 or size check failed.".to_string()),
             )
         }
         ModelStatus::Partial | ModelStatus::Downloading | ModelStatus::Verifying => (
             part_len,
-            Some(EXPECTED_MODEL_BYTES),
+            Some(model.byte_size),
             Some(part_path.to_string_lossy().to_string()),
             None,
         ),
         ModelStatus::NotInstalled => (0, None, None, None),
     };
 
+    let is_selected = get_selected_model_id().eq_ignore_ascii_case(&model.id);
+
     Ok(LocalAiModelStatus {
-        name: MODEL_NAME.to_string(),
+        name: model.id.clone(),
         status,
         downloaded_bytes,
         total_bytes,
         model_path,
         error_message,
-        license: MODEL_LICENSE.to_string(),
-        published_size: PUBLISHED_SIZE_DISPLAY.to_string(),
+        license: model.license.clone(),
+        published_size: model.published_size_display.clone(),
+        id: model.id.clone(),
+        display_name: model.display_name.clone(),
+        min_ram_gb: model.min_ram_gb,
+        recommended_ram_gb: model.recommended_ram_gb,
+        min_disk_gb: model.min_disk_gb,
+        is_selected,
     })
 }
 
-/// Removes only the exact final and partial model files in the target directory.
-pub fn remove_model_files(model_dir: &Path) -> Result<bool, String> {
+/// Inspects model status for a specific model directory using selected model.
+pub fn get_model_status_for_dir(model_dir: &Path) -> Result<LocalAiModelStatus, String> {
+    let selected = get_selected_model_entry();
+    get_model_status_for_entry(model_dir, &selected)
+}
+
+/// Removes model files for a specific filename.
+pub fn remove_model_files_for(model_dir: &Path, filename: &str) -> Result<bool, String> {
     let _control = match DOWNLOAD_CONTROL.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
@@ -682,15 +887,13 @@ pub fn remove_model_files(model_dir: &Path) -> Result<bool, String> {
         return Ok(false);
     }
 
-    // A status request may be hashing the 12.1 GB file. Wait for that bounded
-    // verification operation before attempting a Windows-safe removal.
     let _verify_lock = match VERIFY_MUTEX.lock() {
         Ok(guard) => guard,
         Err(poisoned) => poisoned.into_inner(),
     };
 
-    let final_path = model_dir.join(FINAL_FILENAME);
-    let part_path = model_dir.join(PARTIAL_FILENAME);
+    let final_path = model_dir.join(filename);
+    let part_path = model_dir.join(format!("{filename}.part"));
 
     let mut removed_any = false;
 
@@ -717,6 +920,12 @@ pub fn remove_model_files(model_dir: &Path) -> Result<bool, String> {
     Ok(removed_any)
 }
 
+/// Removes only the exact final and partial model files for selected model in target directory.
+pub fn remove_model_files(model_dir: &Path) -> Result<bool, String> {
+    let selected = get_selected_model_entry();
+    remove_model_files_for(model_dir, &selected.filename)
+}
+
 /// Triggers cooperative cancellation of the active download if one is in progress.
 pub fn cancel_download() -> bool {
     let _control = match DOWNLOAD_CONTROL.lock() {
@@ -736,6 +945,7 @@ pub fn perform_download_stream_core<F>(
     url: &str,
     expected_sha256: &str,
     expected_bytes: u64,
+    final_filename: &str,
     model_name: &str,
     model_license: &str,
     published_size: &str,
@@ -753,8 +963,15 @@ where
     })?;
     validate_model_directory(model_dir)?;
 
-    let final_path = model_dir.join(FINAL_FILENAME);
-    let part_path = model_dir.join(PARTIAL_FILENAME);
+    let final_path = model_dir.join(final_filename);
+    let part_path = model_dir.join(format!("{final_filename}.part"));
+
+    let model_entry = find_model(model_name);
+    let (model_display_name, min_ram_gb, recommended_ram_gb, min_disk_gb) = match model_entry {
+        Some(ref m) => (m.display_name.clone(), m.min_ram_gb, m.recommended_ram_gb, m.min_disk_gb),
+        None => (model_name.to_string(), 16, 32, 25),
+    };
+    let is_selected = get_selected_model_id().eq_ignore_ascii_case(model_name);
 
     // If final file already exists and is verified regular file, return early
     if fs::symlink_metadata(&final_path).is_ok()
@@ -770,6 +987,12 @@ where
             error_message: None,
             license: model_license.to_string(),
             published_size: published_size.to_string(),
+            id: model_name.to_string(),
+            display_name: model_display_name.clone(),
+            min_ram_gb,
+            recommended_ram_gb,
+            min_disk_gb,
+            is_selected,
         });
     }
 
@@ -889,6 +1112,12 @@ where
                 error_message: Some("Download cancelled by user.".to_string()),
                 license: model_license.to_string(),
                 published_size: published_size.to_string(),
+                id: model_name.to_string(),
+                display_name: model_display_name.clone(),
+                min_ram_gb,
+                recommended_ram_gb,
+                min_disk_gb,
+                is_selected,
             });
         }
 
@@ -1015,11 +1244,18 @@ where
         error_message: None,
         license: model_license.to_string(),
         published_size: published_size.to_string(),
+        id: model_name.to_string(),
+        display_name: model_display_name,
+        min_ram_gb,
+        recommended_ram_gb,
+        min_disk_gb,
+        is_selected,
     })
 }
 
 /// Production entry point for streaming model download using pinned official constants.
-pub fn perform_download_stream<F>(
+pub fn perform_download_stream_for_model<F>(
+    model: &ModelRegistryEntry,
     model_dir: &Path,
     on_progress: F,
 ) -> Result<LocalAiModelStatus, String>
@@ -1027,15 +1263,27 @@ where
     F: Fn(ModelStatus, u64, u64, f64),
 {
     perform_download_stream_core(
-        MODEL_URL,
-        EXPECTED_SHA256,
-        EXPECTED_MODEL_BYTES,
-        MODEL_NAME,
-        MODEL_LICENSE,
-        PUBLISHED_SIZE_DISPLAY,
+        &model.download_url,
+        &model.sha256,
+        model.byte_size,
+        &model.filename,
+        &model.id,
+        &model.license,
+        &model.published_size_display,
         model_dir,
         on_progress,
     )
+}
+
+pub fn perform_download_stream<F>(
+    model_dir: &Path,
+    on_progress: F,
+) -> Result<LocalAiModelStatus, String>
+where
+    F: Fn(ModelStatus, u64, u64, f64),
+{
+    let selected = get_selected_model_entry();
+    perform_download_stream_for_model(&selected, model_dir, on_progress)
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,17 +1291,67 @@ where
 // ---------------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn local_ai_model_status(app: AppHandle) -> Result<LocalAiModelStatus, String> {
+pub async fn local_ai_list_models(app: AppHandle) -> Result<Vec<LocalAiModelStatus>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let model_dir = get_model_dir(&app)?;
-        get_model_status_for_dir(&model_dir)
+        let registry = get_model_registry();
+        let mut list = Vec::new();
+        for m in registry {
+            let dir = get_model_dir_for(&app, &m.directory_name)?;
+            let status = get_model_status_for_entry(&dir, &m)?;
+            list.push(status);
+        }
+        Ok(list)
+    })
+    .await
+    .map_err(|e| format!("List models task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn local_ai_select_model(app: AppHandle, model_id: String) -> Result<LocalAiModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::local_ai_runtime::GLOBAL_SUPERVISOR.stop()?;
+        set_selected_model_id(&model_id)?;
+        let model = get_selected_model_entry();
+        let dir = get_model_dir_for(&app, &model.directory_name)?;
+        get_model_status_for_entry(&dir, &model)
+    })
+    .await
+    .map_err(|e| format!("Select model task join error: {e}"))?
+}
+
+#[tauri::command]
+pub async fn local_ai_get_selected_model() -> Result<String, String> {
+    Ok(get_selected_model_id())
+}
+
+#[tauri::command]
+pub async fn local_ai_model_status(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<LocalAiModelStatus, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let model = match model_id {
+            Some(ref id) => find_model(id).ok_or_else(|| format!("Unknown model ID: {id}"))?,
+            None => get_selected_model_entry(),
+        };
+        let model_dir = get_model_dir_for(&app, &model.directory_name)?;
+        get_model_status_for_entry(&model_dir, &model)
     })
     .await
     .map_err(|e| format!("Model status task join error: {e}"))?
 }
 
 #[tauri::command]
-pub async fn local_ai_download_model(app: AppHandle) -> Result<LocalAiModelStatus, String> {
+pub async fn local_ai_download_model(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<LocalAiModelStatus, String> {
+    let target_model = match model_id {
+        Some(ref id) => find_model(id).ok_or_else(|| format!("Unknown model ID: {id}"))?,
+        None => get_selected_model_entry(),
+    };
+    let model_id_str = target_model.id.clone();
+
     let op_id = {
         let _control = match DOWNLOAD_CONTROL.lock() {
             Ok(guard) => guard,
@@ -1069,12 +1367,11 @@ pub async fn local_ai_download_model(app: AppHandle) -> Result<LocalAiModelStatu
     };
 
     let app_for_task = app.clone();
-    // Requirement 5: Move DownloadGuard ownership into the blocking worker so dropping
-    // the async command future cannot clear ACTIVE_DOWNLOAD while disk/network work continues.
     tauri::async_runtime::spawn_blocking(move || {
         let _guard = DownloadGuard { op_id };
-        let model_dir = get_model_dir(&app_for_task)?;
-        perform_download_stream(
+        let model_dir = get_model_dir_for(&app_for_task, &target_model.directory_name)?;
+        perform_download_stream_for_model(
+            &target_model,
             &model_dir,
             |status, downloaded_bytes, total_bytes, percent| {
                 let _ = app_for_task.emit(
@@ -1084,6 +1381,8 @@ pub async fn local_ai_download_model(app: AppHandle) -> Result<LocalAiModelStatu
                         downloaded_bytes,
                         total_bytes,
                         percent,
+                        id: model_id_str.clone(),
+                        model_id: model_id_str.clone(),
                     },
                 );
             },
@@ -1100,11 +1399,18 @@ pub async fn local_ai_cancel_download(_app: AppHandle) -> Result<bool, String> {
 }
 
 #[tauri::command]
-pub async fn local_ai_remove_model(app: AppHandle) -> Result<bool, String> {
+pub async fn local_ai_remove_model(
+    app: AppHandle,
+    model_id: Option<String>,
+) -> Result<bool, String> {
     tauri::async_runtime::spawn_blocking(move || {
         crate::local_ai_runtime::GLOBAL_SUPERVISOR.stop()?;
-        let model_dir = get_model_dir(&app)?;
-        remove_model_files(&model_dir)
+        let model = match model_id {
+            Some(ref id) => find_model(id).ok_or_else(|| format!("Unknown model ID: {id}"))?,
+            None => get_selected_model_entry(),
+        };
+        let model_dir = get_model_dir_for(&app, &model.directory_name)?;
+        remove_model_files_for(&model_dir, &model.filename)
     })
     .await
     .map_err(|e| format!("Model removal task join error: {e}"))?
@@ -1419,6 +1725,12 @@ mod tests {
             error_message: None,
             license: MODEL_LICENSE.to_string(),
             published_size: PUBLISHED_SIZE_DISPLAY.to_string(),
+            id: MODEL_NAME.to_string(),
+            display_name: "gpt-oss 20B (Local)".to_string(),
+            min_ram_gb: 16,
+            recommended_ram_gb: 32,
+            min_disk_gb: 25,
+            is_selected: true,
         };
 
         let json = serde_json::to_string(&status).unwrap();
@@ -1427,6 +1739,9 @@ mod tests {
         assert!(json.contains("\"modelPath\":\"/test/path\""));
         assert!(json.contains("\"publishedSize\":\"12.1 GB\""));
         assert!(json.contains("\"status\":\"notInstalled\""));
+        assert!(json.contains("\"id\":\"gpt-oss-20b\""));
+        assert!(json.contains("\"displayName\":\"gpt-oss 20B (Local)\""));
+        assert!(json.contains("\"isSelected\":true"));
 
         // Progress struct must include status in camelCase
         let progress = LocalAiDownloadProgress {
@@ -1434,21 +1749,61 @@ mod tests {
             downloaded_bytes: 100,
             total_bytes: 200,
             percent: 50.0,
+            id: MODEL_NAME.to_string(),
+            model_id: MODEL_NAME.to_string(),
         };
         let progress_json = serde_json::to_string(&progress).unwrap();
         assert!(progress_json.contains("\"status\":\"downloading\""));
         assert!(progress_json.contains("\"downloadedBytes\":100"));
         assert!(progress_json.contains("\"totalBytes\":200"));
         assert!(progress_json.contains("\"percent\":50.0"));
+        assert!(progress_json.contains("\"id\":\"gpt-oss-20b\""));
+        assert!(progress_json.contains("\"modelId\":\"gpt-oss-20b\""));
 
         let verifying_progress = LocalAiDownloadProgress {
             status: ModelStatus::Verifying,
             downloaded_bytes: 200,
             total_bytes: 200,
             percent: 100.0,
+            id: MODEL_NAME.to_string(),
+            model_id: MODEL_NAME.to_string(),
         };
         let v_json = serde_json::to_string(&verifying_progress).unwrap();
         assert!(v_json.contains("\"status\":\"verifying\""));
+        assert!(v_json.contains("\"modelId\":\"gpt-oss-20b\""));
+    }
+
+    #[test]
+    fn test_model_registry_entries() {
+        let registry = get_model_registry();
+        assert_eq!(registry.len(), 3);
+        for m in &registry {
+            assert!(!m.id.is_empty());
+            assert!(!m.display_name.is_empty());
+            assert!(!m.commit_sha.is_empty());
+            assert_eq!(m.commit_sha.len(), 40);
+            assert!(!m.sha256.is_empty());
+            assert_eq!(m.sha256.len(), 64);
+            assert!(m.byte_size > 0);
+            assert!(!m.download_url.contains("/main/"), "Must not use /main/ in pinned release URLs");
+        }
+    }
+
+    #[test]
+    fn test_model_selection_and_lookup() {
+        let _serial = lock_test_state();
+        assert!(find_model("gpt-oss-20b").is_some());
+        assert!(find_model("granite-4.0-micro-3b").is_some());
+        assert!(find_model("ministral-3-8b-instruct").is_some());
+        assert!(find_model("unknown-model").is_none());
+
+        assert!(set_selected_model_id("granite-4.0-micro-3b").is_ok());
+        assert_eq!(get_selected_model_id(), "granite-4.0-micro-3b");
+        assert_eq!(get_selected_model_entry().id, "granite-4.0-micro-3b");
+
+        // Reset back to default
+        assert!(set_selected_model_id("gpt-oss-20b").is_ok());
+        assert_eq!(get_selected_model_id(), "gpt-oss-20b");
     }
 
     #[test]
@@ -1538,6 +1893,7 @@ mod tests {
             &url,
             &expected_hash,
             payload_len,
+            FINAL_FILENAME,
             MODEL_NAME,
             MODEL_LICENSE,
             PUBLISHED_SIZE_DISPLAY,
@@ -1614,6 +1970,7 @@ mod tests {
             &url,
             "dummy_hash",
             payload_len,
+            FINAL_FILENAME,
             MODEL_NAME,
             MODEL_LICENSE,
             PUBLISHED_SIZE_DISPLAY,
@@ -1645,6 +2002,13 @@ mod tests {
                     Ok(s) => s,
                     Err(_) => break,
                 };
+                let mut reader = BufReader::new(&stream);
+                loop {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).unwrap_or(0) == 0 || line.trim().is_empty() {
+                        break;
+                    }
+                }
                 let resp = "HTTP/1.1 200 OK\r\nContent-Length: 20\r\nConnection: close\r\n\r\n01234567890123456789";
                 let _ = stream.write_all(resp.as_bytes());
             }
@@ -1659,6 +2023,7 @@ mod tests {
             &url,
             "hash",
             10, // expects 10 bytes, server header claims 20
+            FINAL_FILENAME,
             MODEL_NAME,
             MODEL_LICENSE,
             PUBLISHED_SIZE_DISPLAY,
@@ -1719,6 +2084,7 @@ mod tests {
             &url,
             &expected_hash,
             payload_len,
+            FINAL_FILENAME,
             MODEL_NAME,
             MODEL_LICENSE,
             PUBLISHED_SIZE_DISPLAY,

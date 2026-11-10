@@ -13,6 +13,7 @@ pub mod report;
 pub mod semantic;
 pub mod tabular_import;
 pub mod universal_export;
+pub mod timeline_session;
 pub mod universal_import;
 
 #[cfg(not(test))]
@@ -96,10 +97,23 @@ pub fn run() {
             local_ai_manager::local_ai_download_model,
             local_ai_manager::local_ai_cancel_download,
             local_ai_manager::local_ai_remove_model,
+            local_ai_manager::local_ai_list_models,
+            local_ai_manager::local_ai_select_model,
+            local_ai_manager::local_ai_get_selected_model,
             local_ai_runtime::local_ai_runtime_status,
             local_ai_runtime::local_ai_runtime_start,
             local_ai_runtime::local_ai_runtime_stop,
+            local_ai_runtime::local_ai_cancel_analysis,
+            local_ai_runtime::local_ai_runtime_diagnostics,
             local_ai_runtime::local_ai_analyze_evidence,
+            timeline_session::prepare_unified_timeline_query,
+            timeline_session::query_unified_timeline_page,
+            timeline_session::count_unified_timeline,
+            timeline_session::get_unified_timeline_row_details,
+            timeline_session::cancel_unified_timeline_build,
+            timeline_session::close_unified_timeline_session,
+            timeline_session::export_unified_timeline_session_xlsx,
+            timeline_session::export_unified_timeline_session_csv,
         ])
         .build(tauri::generate_context!())
         .expect("error while running tauri application");

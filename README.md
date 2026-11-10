@@ -4,10 +4,12 @@ A fast, fully offline desktop forensic log viewer and investigation workbench fo
 and CSV) — built for DFIR examiners. Handles 100k+ row files, dynamic
 column detection, keyset-paginated filtering/search, multi-file correlation, AI-assisted evidence
 retrieval, optional MITRE ATT&CK enrichment, and multi-sheet report export.
-**No runtime network calls** — imported evidence and AI inference stay on
-your machine.
+**Offline & Private by Default** — all evidence ingestion, indexing, chronological Master Timeline correlation, and local model inference run strictly offline on your machine with zero external network transmission. Network access is utilized exclusively for optional, examiner-initiated model downloads or user-confirmed cloud AI (Google Gemini BYOK).
 
 See the [wiki](../../wiki) for a full user guide.
+
+Engineering references: [build report](BUILD_ENGINEERING_REPORT.md) and
+[full-evidence timeline/local-model implementation brief](GEMINI_COMPLETENESS_AND_LOCAL_MODELS_IMPLEMENTATION.md).
 
 ## Features
 
@@ -22,7 +24,7 @@ See the [wiki](../../wiki) for a full user guide.
 - Automatic data mapping for timestamps and common evidence fields, with optional manual overrides. Mapping is metadata for timelines and threat enrichment; it never limits which raw rows the AI can search.
 - UTC timestamp normalization, with an explicit prompt when a timestamp's timezone is ambiguous.
 - An offline, built-in MITRE ATT&CK-style keyword library, scanned via Aho-Corasick pattern matching, extensible with your own custom categories.
-- Offline evidence search and optional local/cloud AI assistance. The application remains fully usable offline without any local model installed via fast deterministic search rules and embedded all-MiniLM-L6-v2 semantic retrieval. When the optional 12.1 GB `gpt-oss-20b` model is downloaded, offline query planning and multi-turn evidence analysis run via a managed, loopback-only llama.cpp server runtime. Examiners may also optionally use Google Gemini (cloud BYOK) with explicit transfer confirmation.
+- Offline evidence search and selectable local/cloud AI assistance. The application remains fully usable offline without any local model installed via fast deterministic search rules and embedded all-MiniLM-L6-v2 semantic retrieval. Examiners can download and select supported offline GGUF models from the built-in Model Registry (`gpt-oss 20B`, `Granite 4.0 Micro 3B`, `Ministral 3 8B Instruct`), managed via a loopback-only llama.cpp server runtime with streaming responses and progress watchdogs. Examiners may also optionally use Google Gemini (cloud BYOK) with explicit transfer confirmation.
 - One-step AI search: submitting a request validates and executes its bounded plan immediately, and asks for clarification only when a safe search cannot be formed. Returned rows include a `Why matched` explanation. Generated search values must be grounded in the examiner's request. The models cannot execute SQL, read arbitrary files, launch processes, or access the network.
 - Interactive Threat Enrichment & Attack Chains: Clickable MITRE ATT&CK tactics, techniques, and correlated attack chains. In multi-file cases, 1-click drilldowns ("View in Table" / "Filter Grid") seamlessly route to the Unified Correlated Grid when matches span multiple files, or auto-switch to the matching evidence file when hits are concentrated in a single log.
 - One-click multi-sheet XLSX report export: a case-summary sheet, a chronological MITRE-mapped timeline, and one sheet per matched technique category — every row traceable back to its original source row. Also supports exporting the complete Unified Correlated Grid into multi-sheet Excel workbooks.
@@ -52,6 +54,10 @@ Sample data is included under `testdata/`:
 - `multi_sheet_sample.xlsx` — a small 3-sheet workbook.
 
 ## Building from source
+
+For a full architecture, build, verification, release, forensic-invariant, and
+known-limitations record, see the
+[Engineering Build, Architecture, and Release Report](BUILD_ENGINEERING_REPORT.md).
 
 Requires [Rust](https://rustup.rs/), Python 3, and the
 [Tauri v2 prerequisites](https://v2.tauri.app/start/prerequisites/) for
@@ -91,7 +97,7 @@ Rust + [Tauri v2](https://v2.tauri.app/) · [calamine](https://github.com/tafia/
 (Excel parsing) · SQLite via [rusqlite](https://github.com/rusqlite/rusqlite)
 (bundled, FTS5 full-text search) · [aho-corasick](https://github.com/BurntSushi/aho-corasick)
 (keyword matching) · [rust_xlsxwriter](https://github.com/jmcnamara/rust_xlsxwriter)
-(report export) · Managed local [llama.cpp](https://github.com/ggml-org/llama.cpp) (release b12080) for optional offline [gpt-oss-20b](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF) planning and multi-turn evidence analysis · [Candle](https://github.com/huggingface/candle) with [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) for semantic retrieval · optional Google Gemini cloud BYOK · plain HTML/CSS/vanilla JS frontend
+(report export) · Managed local [llama.cpp](https://github.com/ggml-org/llama.cpp) for optional selectable offline models ([gpt-oss-20b](https://huggingface.co/ggml-org/gpt-oss-20b-GGUF), [Granite 4.0 Micro 3B](https://huggingface.co/ibm-granite/granite-4.0-micro-GGUF), [Ministral 3 8B Instruct](https://huggingface.co/mistralai/Ministral-3-8B-Instruct-2512-GGUF)) planning and multi-turn evidence analysis · [Candle](https://github.com/huggingface/candle) with [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) for semantic retrieval · optional Google Gemini cloud BYOK · plain HTML/CSS/vanilla JS frontend
 ([Tabulator.js](https://tabulator.info/) for the grid), no build step.
 
 ## Downloads

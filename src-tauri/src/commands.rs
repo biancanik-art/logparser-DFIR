@@ -1940,7 +1940,7 @@ fn format_row_snippet(
     }
 }
 
-#[derive(Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct FileTarget {
     pub path: String,
@@ -2151,6 +2151,7 @@ pub fn is_forensic_evidence_file(file_name: &str) -> bool {
     // Excel workbooks
     if lower.ends_with(".xlsx")
         || lower.ends_with(".xls")
+        || lower.ends_with(".xlsm")
         || lower.ends_with(".xlsb")
         || lower.ends_with(".ods")
     {

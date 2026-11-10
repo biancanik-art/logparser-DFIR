@@ -528,12 +528,20 @@
             <div id="ai-local-model-bar" class="ai-analyze-model-bar">
               <div class="ai-analyze-model-info">
                 <span class="ai-provider-label">Provider: <strong>Local llama-server</strong></span>
-                <span class="ai-model-label">Model: <code id="ai-local-model-name">gpt-oss-20b</code> (MXFP4)</span>
+                <span class="ai-model-label">Model:
+                  <select id="ai-local-model-select" class="ai-local-model-select" title="Select offline model">
+                    <option value="gpt-oss-20b" selected>gpt-oss-20b (MXFP4, 12.1 GB)</option>
+                    <option value="granite-4.0-micro-3b">Granite 4.0 Micro 3B (Q4_K_M, 2.1 GB)</option>
+                    <option value="ministral-3-8b-instruct">Ministral 3 8B Instruct (Q4_K_M, 5.2 GB)</option>
+                  </select>
+                  <code id="ai-local-model-name" class="hidden">gpt-oss-20b</code>
+                </span>
                 <span id="ai-local-runtime-badge" class="ai-verify-badge unverified">Checking runtime...</span>
               </div>
               <div class="ai-analyze-model-actions">
                 <button id="ai-start-runtime-btn" class="btn btn-small" type="button" title="Start local AI runtime">⚡ Start Runtime</button>
-                <button id="ai-open-settings-local-btn" class="btn btn-small" type="button">⚙️ Manage Model</button>
+                <button id="ai-cancel-analysis-btn" class="btn btn-small hidden" type="button" title="Cancel running inference">🛑 Cancel</button>
+                <button id="ai-open-settings-local-btn" class="btn btn-small" type="button">⚙️ Manage Models</button>
               </div>
             </div>
 
@@ -1053,8 +1061,69 @@
             <button id="local-ai-cancel-btn" class="btn btn-small hidden" type="button">Cancel Download</button>
             <button id="local-ai-remove-btn" class="btn btn-small hidden" type="button">Remove Model</button>
           </div>
-          <p class="local-ai-integrity-note">The model is downloaded from the official ggml-org repository, streamed to a partial file, and activated only after its published SHA-256 checksum is verified. No evidence is uploaded during local analysis.</p>
+          <p class="local-ai-integrity-note">Official ggml-org repository (Apache-2.0). Resumable download, verified SHA-256 before activation. No evidence is uploaded during local analysis.</p>
         </section>
+
+        <!-- Model 2: Granite 4.0 Micro 3B -->
+        <section class="local-ai-settings-card" aria-labelledby="local-ai-granite-title" style="margin-top: 12px;">
+          <div class="local-ai-settings-heading">
+            <div>
+              <h4 id="local-ai-granite-title">Offline AI — IBM Granite 4.0 Micro 3B</h4>
+              <p>Compact, fast model for lightweight workstations and rapid evidence sweeps.</p>
+            </div>
+            <span id="local-ai-granite-state" class="local-ai-state-badge not-installed">Checking…</span>
+          </div>
+          <div class="local-ai-requirements">
+            <span><strong>Download:</strong> 2.1 GB</span>
+            <span><strong>Recommended memory:</strong> 4 GB+</span>
+            <span><strong>Format:</strong> Q4_K_M GGUF</span>
+            <span><strong>License:</strong> Apache-2.0</span>
+          </div>
+          <p id="local-ai-granite-detail" class="local-ai-model-detail">Checking installation…</p>
+          <div id="local-ai-granite-progress-wrap" class="local-ai-progress-wrap hidden" aria-live="polite">
+            <div class="local-ai-progress-track"><div id="local-ai-granite-progress-fill" class="local-ai-progress-fill"></div></div>
+            <span id="local-ai-granite-progress-text">0%</span>
+          </div>
+          <div class="local-ai-settings-actions">
+            <button id="local-ai-granite-download-btn" class="btn btn-small btn-primary" type="button">Download Granite 3B</button>
+            <button id="local-ai-granite-cancel-btn" class="btn btn-small hidden" type="button">Cancel Download</button>
+            <button id="local-ai-granite-remove-btn" class="btn btn-small hidden" type="button">Remove Model</button>
+          </div>
+          <p class="local-ai-integrity-note">Official ibm-granite repository. Resumable download, verified SHA-256 before activation.</p>
+        </section>
+
+        <!-- Model 3: Ministral 3 8B Instruct -->
+        <section class="local-ai-settings-card" aria-labelledby="local-ai-ministral-title" style="margin-top: 12px;">
+          <div class="local-ai-settings-heading">
+            <div>
+              <h4 id="local-ai-ministral-title">Offline AI — Mistral Ministral 3 8B Instruct</h4>
+              <p>Balanced instruction model with strong cybersecurity and forensic reasoning.</p>
+            </div>
+            <span id="local-ai-ministral-state" class="local-ai-state-badge not-installed">Checking…</span>
+          </div>
+          <div class="local-ai-requirements">
+            <span><strong>Download:</strong> 5.2 GB</span>
+            <span><strong>Recommended memory:</strong> 8 GB+</span>
+            <span><strong>Format:</strong> Q4_K_M GGUF</span>
+            <span><strong>License:</strong> Apache-2.0</span>
+          </div>
+          <p id="local-ai-ministral-detail" class="local-ai-model-detail">Checking installation…</p>
+          <div id="local-ai-ministral-progress-wrap" class="local-ai-progress-wrap hidden" aria-live="polite">
+            <div class="local-ai-progress-track"><div id="local-ai-ministral-progress-fill" class="local-ai-progress-fill"></div></div>
+            <span id="local-ai-ministral-progress-text">0%</span>
+          </div>
+          <div class="local-ai-settings-actions">
+            <button id="local-ai-ministral-download-btn" class="btn btn-small btn-primary" type="button">Download Ministral 8B</button>
+            <button id="local-ai-ministral-cancel-btn" class="btn btn-small hidden" type="button">Cancel Download</button>
+            <button id="local-ai-ministral-remove-btn" class="btn btn-small hidden" type="button">Remove Model</button>
+          </div>
+          <p class="local-ai-integrity-note">Official mistralai repository. Resumable download, verified SHA-256 before activation.</p>
+        </section>
+
+        <!-- Diagnostics Button -->
+        <div style="margin-top: 12px; margin-bottom: 8px;">
+          <button id="local-ai-diagnostics-btn" class="btn btn-small" type="button">📋 View Redacted llama-server Logs</button>
+        </div>
 
         <div class="ai-settings-divider"><span>Cloud provider (optional)</span></div>
         <div style="margin-bottom: 16px;">
@@ -1110,6 +1179,30 @@
     </div>
   </div>
   <div id="settings-modal-backdrop" class="shortcuts-modal-backdrop hidden"></div>
+
+  <!-- Local AI Diagnostics Modal -->
+  <div id="local-ai-diagnostics-modal" class="shortcuts-modal hidden" role="dialog" aria-modal="true" aria-labelledby="diagnostics-modal-title">
+    <div class="shortcuts-modal-card" style="max-width: 760px; width: 92%;">
+      <div class="shortcuts-modal-header">
+        <div class="shortcuts-modal-title-group">
+          <span class="shortcuts-modal-badge" style="background:#059669; color:#fff;">Diagnostics</span>
+          <h3 id="diagnostics-modal-title">llama-server Runtime Diagnostics</h3>
+        </div>
+        <button id="diagnostics-modal-close-btn" class="btn btn-small btn-icon" title="Close (Esc)">✕</button>
+      </div>
+      <div class="shortcuts-modal-body" style="padding: 16px;">
+        <p style="font-size: 11px; color: var(--text-muted); margin-bottom: 8px;">
+          Recent server stderr log tail (up to 64 KB). Sensitive authentication tokens and request authorization headers are automatically redacted.
+        </p>
+        <pre id="local-ai-diagnostics-content" style="background: var(--bg-app); border: 1px solid var(--border); padding: 10px; border-radius: 4px; font-family: monospace; font-size: 11px; max-height: 400px; overflow: auto; white-space: pre-wrap; word-break: break-all;"></pre>
+      </div>
+      <div class="shortcuts-modal-footer" style="display: flex; justify-content: flex-end; gap: 8px; padding: 12px 16px;">
+        <button id="diagnostics-refresh-btn" class="btn btn-small" type="button">🔄 Refresh</button>
+        <button id="diagnostics-copy-btn" class="btn btn-small" type="button">📋 Copy to Clipboard</button>
+      </div>
+    </div>
+  </div>
+  <div id="local-ai-diagnostics-backdrop" class="shortcuts-modal-backdrop hidden"></div>
 
   <script src="vendor/tabulator/tabulator.min.js"></script>
   <script src="app.js"></script>

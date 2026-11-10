@@ -22,6 +22,8 @@ __pycache__/
 
 *.md
 !/README.md
+!/BUILD_ENGINEERING_REPORT.md
+!/GEMINI_COMPLETENESS_AND_LOCAL_MODELS_IMPLEMENTATION.md
 
 # Debug temporary logs
 src-tauri/debug_*.txt

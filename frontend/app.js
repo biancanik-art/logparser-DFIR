@@ -9445,6 +9445,9 @@
     updateLocalRuntimeUiForTest(status) {
       updateLocalRuntimeUi(status);
     },
+    isRecoverableLocalAiTransportErrorForTest(error) {
+      return isRecoverableLocalAiTransportError(error);
+    },
     stageAiEvidenceForTest(rows) {
       return stageSelectionForAiAnalysis(rows);
     },
@@ -10955,18 +10958,25 @@
 
   function renderConversationTranscript() {
     const transcriptEl = document.getElementById("ai-conversation-transcript");
+    const resultsContent = document.getElementById("ai-analysis-results-content");
     if (!transcriptEl) return;
     if (localAiConversationHistory.length === 0) {
       transcriptEl.innerHTML = "";
+      if (resultsContent) resultsContent.classList.remove("hidden");
       return;
     }
+    if (resultsContent) {
+      resultsContent.innerHTML = "";
+      resultsContent.classList.add("hidden");
+    }
+    const activeModel = (localAiRuntimeState && localAiRuntimeState.modelName) || "Local AI Assistant";
     let html = "";
     for (const turn of localAiConversationHistory) {
       if (turn.role === "user") {
         html += `<div class="ai-turn ai-turn-user"><div class="ai-turn-header">👤 Examiner</div><div class="ai-turn-body">${escapeHtml(turn.content)}</div></div>`;
       } else {
         const assistantDisplay = turn.displayContent || turn.content;
-        html += `<div class="ai-turn ai-turn-assistant"><div class="ai-turn-header">🤖 Local AI Assistant (gpt-oss-20b)</div><div class="ai-turn-body">${renderSafeMarkdown(assistantDisplay)}</div></div>`;
+        html += `<div class="ai-turn ai-turn-assistant"><div class="ai-turn-header">🤖 Local AI Assistant (${escapeHtml(activeModel)})</div><div class="ai-turn-body">${renderSafeMarkdown(assistantDisplay)}</div></div>`;
       }
     }
     transcriptEl.innerHTML = html;
@@ -10983,7 +10993,10 @@
     const resultsContent = document.getElementById("ai-analysis-results-content");
     const resultsMeta = document.getElementById("ai-results-meta");
     if (resultsCard) resultsCard.classList.remove("hidden");
-    if (resultsContent) resultsContent.innerHTML = renderSafeMarkdown(assistantText);
+    if (resultsContent) {
+      resultsContent.innerHTML = "";
+      resultsContent.classList.add("hidden");
+    }
     if (resultsMeta) resultsMeta.textContent = `Local evidence search • ${new Date().toLocaleTimeString()}`;
     const promptInput = document.getElementById("ai-analyze-prompt-input");
     if (promptInput) promptInput.value = "";
@@ -11097,6 +11110,9 @@
 
   function isRecoverableLocalAiTransportError(error) {
     const message = String(error && (error.message || error)).toLowerCase();
+    if (message.includes("timed out") || message.includes("timeout") || message.includes("deadline")) {
+      return false;
+    }
     return message.includes("error sending request for url")
       || message.includes("connection refused")
       || message.includes("connection reset")
@@ -11438,18 +11454,41 @@
     const transcriptEl = document.getElementById("ai-conversation-transcript");
 
     if (sendBtn) sendBtn.disabled = true;
-    if (statusEl) statusEl.textContent = `Analyzing ${stagedAiEvidence.rows.length} selected rows with local gpt-oss...`;
+    const cancelAnalysisBtn = document.getElementById("ai-cancel-analysis-btn");
+    if (cancelAnalysisBtn) cancelAnalysisBtn.classList.remove("hidden");
+    const activeModelId = (document.getElementById("ai-local-model-select") || {}).value || "gpt-oss-20b";
+    if (statusEl) statusEl.textContent = `Analyzing ${stagedAiEvidence.rows.length} selected rows with local ${activeModelId}...`;
     if (resultsCard) resultsCard.classList.remove("hidden");
 
     if (transcriptEl) {
       const userTurnHtml = `<div class="ai-turn ai-turn-user"><div class="ai-turn-header">👤 Examiner</div><div class="ai-turn-body">${escapeHtml(userPrompt)}</div></div>`;
-      const pendingTurnHtml = `<div id="ai-pending-turn" class="ai-turn ai-turn-assistant"><div class="ai-turn-header">🤖 Local AI Assistant (gpt-oss-20b)</div><div class="ai-turn-body"><span class="loading-spinner"></span> Analyzing selected evidence with local gpt-oss...</div></div>`;
+      const pendingTurnHtml = `<div id="ai-pending-turn" class="ai-turn ai-turn-assistant"><div class="ai-turn-header">🤖 Local AI Assistant (${escapeHtml(activeModelId)})</div><div class="ai-turn-body"><span class="loading-spinner"></span> Analyzing selected evidence with local ${escapeHtml(activeModelId)}...</div></div>`;
       transcriptEl.innerHTML += userTurnHtml + pendingTurnHtml;
       transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
     if (resultsContent) {
-      resultsContent.innerHTML = `<div style="display:flex; align-items:center; gap:8px; color:var(--text-muted);"><span class="loading-spinner"></span> Analyzing selected evidence with local gpt-oss...</div>`;
+      resultsContent.innerHTML = `<div style="display:flex; align-items:center; gap:8px; color:var(--text-muted);"><span class="loading-spinner"></span> Analyzing selected evidence with local ${escapeHtml(activeModelId)}...</div>`;
     }
+
+    let unlistenTokens = null;
+    try {
+      unlistenTokens = await listen("local-ai-token-stream", (event) => {
+        const token = event && event.payload;
+        if (typeof token === "string") {
+          const pendingEl = document.getElementById("ai-pending-turn");
+          if (pendingEl) {
+            const bodyEl = pendingEl.querySelector(".ai-turn-body");
+            if (bodyEl) {
+              if (bodyEl.querySelector(".loading-spinner")) {
+                bodyEl.innerHTML = "";
+              }
+              bodyEl.textContent += token;
+              if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
+            }
+          }
+        }
+      });
+    } catch (_) {}
 
     try {
       const response = await invokeLocalAiAnalysisWithRecovery({
@@ -11468,7 +11507,8 @@
         if (bodyEl) bodyEl.innerHTML = renderedText;
       }
       if (resultsContent) {
-        resultsContent.innerHTML = renderedText;
+        resultsContent.innerHTML = "";
+        resultsContent.classList.add("hidden");
       }
       if (resultsMeta) {
         const citCount = response.citations ? response.citations.length : 0;
@@ -11500,6 +11540,10 @@
       }
       if (statusEl) statusEl.textContent = `Error: ${errText}`;
     } finally {
+      if (unlistenTokens && typeof unlistenTokens === "function") {
+        try { unlistenTokens(); } catch (_) {}
+      }
+      if (cancelAnalysisBtn) cancelAnalysisBtn.classList.add("hidden");
       if (sendBtn) sendBtn.disabled = false;
       if (transcriptEl) transcriptEl.scrollTop = transcriptEl.scrollHeight;
     }
@@ -12064,10 +12108,14 @@ If the command is benign or standard administrative activity, state that clearly
 
     const copyResultsBtn = document.getElementById("ai-copy-results-btn");
     const resultsContent = document.getElementById("ai-analysis-results-content");
-    if (copyResultsBtn && resultsContent) {
+    if (copyResultsBtn) {
       copyResultsBtn.addEventListener("click", () => {
         if (navigator && navigator.clipboard) {
-          navigator.clipboard.writeText(resultsContent.textContent || "").then(() => {
+          const transcriptEl = document.getElementById("ai-conversation-transcript");
+          const textToCopy = (transcriptEl && transcriptEl.textContent && transcriptEl.textContent.trim())
+            ? transcriptEl.textContent.trim()
+            : (resultsContent ? (resultsContent.textContent || "").trim() : "");
+          navigator.clipboard.writeText(textToCopy).then(() => {
             copyResultsBtn.textContent = "✓ Copied!";
             setTimeout(() => { copyResultsBtn.textContent = "📋 Copy Output"; }, 2000);
           });
@@ -12150,7 +12198,7 @@ If the command is benign or standard administrative activity, state that clearly
     if (progressText) {
       progressText.textContent = state === "verifying"
         ? "Verifying SHA-256…"
-        : `${percent.toFixed(1)}% · ${formatLocalAiBytes(downloaded)}`;
+        : (total > 0 ? `${percent.toFixed(1)}% · ${formatLocalAiBytes(downloaded)}` : "Connecting…");
     }
 
     if (detailEl) {
@@ -12163,7 +12211,11 @@ If the command is benign or standard administrative activity, state that clearly
       } else if (state === "corrupt") {
         detailEl.textContent = "The artifact did not pass integrity verification. Remove it before downloading again.";
       } else if (state === "downloading") {
-        detailEl.textContent = `Downloading ${formatLocalAiBytes(downloaded)} of ${formatLocalAiBytes(total)}.`;
+        if (total > 0) {
+          detailEl.textContent = `Downloading ${formatLocalAiBytes(downloaded)} of ${formatLocalAiBytes(total)}.`;
+        } else {
+          detailEl.textContent = "Connecting to download server...";
+        }
       } else if (state === "verifying") {
         detailEl.textContent = "Download finished. Verifying the complete file before activation.";
       } else {
@@ -12181,11 +12233,107 @@ If the command is benign or standard administrative activity, state that clearly
     if (removeBtn) removeBtn.classList.toggle("hidden", busy || (state !== "installed" && state !== "partial" && state !== "corrupt"));
   }
 
+  function renderModelStatusFor(modelKey, status) {
+    const isGpt = modelKey === "gpt-oss-20b";
+    const prefix = isGpt ? "local-ai-" : (modelKey === "granite-4.0-micro-3b" ? "local-ai-granite-" : "local-ai-ministral-");
+    const stateEl = document.getElementById(isGpt ? "local-ai-model-state" : `${prefix}state`);
+    const progressWrap = document.getElementById(isGpt ? "local-ai-progress-wrap" : `${prefix}progress-wrap`);
+    const progressFill = document.getElementById(isGpt ? "local-ai-progress-fill" : `${prefix}progress-fill`);
+    const progressText = document.getElementById(isGpt ? "local-ai-progress-text" : `${prefix}progress-text`);
+    const detailEl = document.getElementById(isGpt ? "local-ai-model-detail" : `${prefix}detail`);
+    const downloadBtn = document.getElementById(isGpt ? "local-ai-download-btn" : `${prefix}download-btn`);
+    const cancelBtn = document.getElementById(isGpt ? "local-ai-cancel-btn" : `${prefix}cancel-btn`);
+    const removeBtn = document.getElementById(isGpt ? "local-ai-remove-btn" : `${prefix}remove-btn`);
+
+    const state = status ? status.status : "notInstalled";
+    const labels = {
+      notInstalled: "Not installed",
+      downloading: "Downloading…",
+      partial: "Partially downloaded",
+      verifying: "Verifying",
+      installed: "Installed & verified",
+      corrupt: "Checksum failed",
+    };
+
+    if (stateEl) {
+      stateEl.textContent = labels[state] || state;
+      stateEl.className = `local-ai-state-badge ${state.replace(/([a-z])([A-Z])/g, "$1-$2").toLowerCase()}`;
+    }
+
+    const downloaded = Number(status && status.downloadedBytes) || 0;
+    const total = Number(status && status.totalBytes) || 0;
+    const percentValue = Number(status && status.percent);
+    const percent = Number.isFinite(percentValue)
+      ? Math.max(0, Math.min(100, percentValue))
+      : (total > 0 ? Math.max(0, Math.min(100, (downloaded / total) * 100)) : 0);
+    const showProgress = state === "partial" || state === "downloading" || state === "verifying";
+
+    if (progressWrap) progressWrap.classList.toggle("hidden", !showProgress);
+    if (progressFill) progressFill.style.width = `${percent}%`;
+    if (progressText) {
+      progressText.textContent = state === "verifying"
+        ? "Verifying SHA-256…"
+        : (total > 0 ? `${percent.toFixed(1)}% · ${formatLocalAiBytes(downloaded)}` : "Connecting…");
+    }
+
+    if (detailEl) {
+      if (status && status.detail) {
+        detailEl.textContent = status.detail;
+      } else if (state === "installed") {
+        detailEl.textContent = "The local artifact passed its published SHA-256 checksum.";
+      } else if (state === "partial") {
+        detailEl.textContent = `${formatLocalAiBytes(downloaded)} downloaded. Download can be resumed.`;
+      } else if (state === "corrupt") {
+        detailEl.textContent = "The artifact did not pass integrity verification. Remove it before downloading again.";
+      } else if (state === "downloading") {
+        if (total > 0) {
+          detailEl.textContent = `Downloading ${formatLocalAiBytes(downloaded)} of ${formatLocalAiBytes(total)}.`;
+        } else {
+          detailEl.textContent = "Connecting to download server...";
+        }
+      } else if (state === "verifying") {
+        detailEl.textContent = "Download finished. Verifying SHA-256 checksum before activation.";
+      } else {
+        detailEl.textContent = isGpt ? "No gpt-oss model is installed. Current deterministic evidence search remains available." : "Model not installed.";
+      }
+    }
+
+    const busy = state === "downloading" || state === "verifying";
+    if (downloadBtn) {
+      downloadBtn.classList.toggle("hidden", state === "installed" || busy || state === "corrupt");
+      downloadBtn.textContent = state === "partial" ? "Resume Download" : (isGpt ? "Download Offline AI" : `Download ${status && status.displayName ? status.displayName : "Model"}`);
+      downloadBtn.disabled = busy;
+    }
+    if (cancelBtn) cancelBtn.classList.toggle("hidden", state !== "downloading");
+    if (removeBtn) removeBtn.classList.toggle("hidden", busy || (state !== "installed" && state !== "partial" && state !== "corrupt"));
+  }
+
   async function refreshLocalAiModelStatus() {
     try {
-      const status = await invoke("local_ai_model_status");
-      renderLocalAiModelStatus(status || { status: "notInstalled" });
-      return status;
+      const gptStatus = await invoke("local_ai_model_status", { modelId: "gpt-oss-20b" });
+      renderModelStatusFor("gpt-oss-20b", gptStatus || { status: "notInstalled" });
+
+      try {
+        const graniteStatus = await invoke("local_ai_model_status", { modelId: "granite-4.0-micro-3b" });
+        renderModelStatusFor("granite-4.0-micro-3b", graniteStatus || { status: "notInstalled" });
+      } catch (_) {}
+
+      try {
+        const ministralStatus = await invoke("local_ai_model_status", { modelId: "ministral-3-8b-instruct" });
+        renderModelStatusFor("ministral-3-8b-instruct", ministralStatus || { status: "notInstalled" });
+      } catch (_) {}
+
+      try {
+        const sel = await invoke("local_ai_get_selected_model");
+        const modelSelect = document.getElementById("ai-local-model-select");
+        if (modelSelect && sel) {
+          modelSelect.value = sel;
+          const codeEl = document.getElementById("ai-local-model-name");
+          if (codeEl) codeEl.textContent = sel;
+        }
+      } catch (_) {}
+
+      return gptStatus;
     } catch (err) {
       renderLocalAiModelStatus({
         status: "notInstalled",
@@ -12200,6 +12348,184 @@ If the command is benign or standard administrative activity, state that clearly
     const cancelBtn = document.getElementById("local-ai-cancel-btn");
     const removeBtn = document.getElementById("local-ai-remove-btn");
 
+    // Granite model controls
+    const graniteDownloadBtn = document.getElementById("local-ai-granite-download-btn");
+    const graniteCancelBtn = document.getElementById("local-ai-granite-cancel-btn");
+    const graniteRemoveBtn = document.getElementById("local-ai-granite-remove-btn");
+
+    // Ministral model controls
+    const ministralDownloadBtn = document.getElementById("local-ai-ministral-download-btn");
+    const ministralCancelBtn = document.getElementById("local-ai-ministral-cancel-btn");
+    const ministralRemoveBtn = document.getElementById("local-ai-ministral-remove-btn");
+
+    // Model selection dropdown
+    const modelSelect = document.getElementById("ai-local-model-select");
+    if (modelSelect) {
+      modelSelect.addEventListener("change", async () => {
+        const modelId = modelSelect.value;
+        try {
+          await invoke("local_ai_select_model", { modelId });
+          const codeEl = document.getElementById("ai-local-model-name");
+          if (codeEl) codeEl.textContent = modelId;
+          if (localAiRuntimeState && localAiRuntimeState.status === "ready") {
+            try { await invoke("local_ai_runtime_stop"); } catch (_) {}
+            await invoke("local_ai_runtime_start");
+          }
+          await checkLocalAiRuntimeStatus();
+          await refreshLocalAiModelStatus();
+        } catch (err) {
+          alert(`Could not select model: ${err}`);
+        }
+      });
+    }
+
+    // Cancellation button
+    const cancelAnalysisBtn = document.getElementById("ai-cancel-analysis-btn");
+    if (cancelAnalysisBtn) {
+      cancelAnalysisBtn.addEventListener("click", async () => {
+        try {
+          await invoke("local_ai_cancel_analysis");
+          cancelAnalysisBtn.classList.add("hidden");
+        } catch (_) {}
+      });
+    }
+
+    // Runtime diagnostics
+    const diagBtn = document.getElementById("local-ai-diagnostics-btn");
+    const diagModal = document.getElementById("local-ai-diagnostics-modal");
+    const diagCloseBtn = document.getElementById("diagnostics-modal-close-btn");
+    const diagBackdrop = document.getElementById("local-ai-diagnostics-backdrop");
+    const diagContent = document.getElementById("local-ai-diagnostics-content");
+    const diagRefreshBtn = document.getElementById("diagnostics-refresh-btn");
+    const diagCopyBtn = document.getElementById("diagnostics-copy-btn");
+
+    async function loadDiagnostics() {
+      if (!diagContent) return;
+      diagContent.textContent = "Loading runtime logs…";
+      try {
+        const logs = await invoke("local_ai_runtime_diagnostics");
+        diagContent.textContent = logs || "No llama-server logs recorded yet.";
+      } catch (e) {
+        diagContent.textContent = `Diagnostics error: ${e}`;
+      }
+    }
+
+    if (diagBtn && diagModal) {
+      diagBtn.addEventListener("click", () => {
+        diagModal.classList.remove("hidden");
+        if (diagBackdrop) diagBackdrop.classList.remove("hidden");
+        loadDiagnostics();
+      });
+    }
+    if (diagCloseBtn && diagModal) {
+      diagCloseBtn.addEventListener("click", () => {
+        diagModal.classList.add("hidden");
+        if (diagBackdrop) diagBackdrop.classList.add("hidden");
+      });
+    }
+    if (diagBackdrop && diagModal) {
+      diagBackdrop.addEventListener("click", () => {
+        diagModal.classList.add("hidden");
+        diagBackdrop.classList.add("hidden");
+      });
+    }
+    if (diagRefreshBtn) diagRefreshBtn.addEventListener("click", loadDiagnostics);
+    if (diagCopyBtn && diagContent) {
+      diagCopyBtn.addEventListener("click", () => {
+        navigator.clipboard.writeText(diagContent.textContent);
+        diagCopyBtn.textContent = "Copied!";
+        setTimeout(() => { diagCopyBtn.textContent = "📋 Copy to Clipboard"; }, 1500);
+      });
+    }
+
+    if (graniteDownloadBtn) {
+      graniteDownloadBtn.addEventListener("click", async () => {
+        const accepted = await requestConfirmation(
+          "Download offline IBM Granite 4.0 Micro 3B?\n\n" +
+          "This downloads approximately 2.1 GB (Q4_K_M GGUF) from the official ibm-granite repository. " +
+          "Allow at least 4 GB of free disk space and 4 GB of system memory. " +
+          "The download is resumable and is activated only after SHA-256 verification."
+        );
+        if (!accepted) return;
+        renderModelStatusFor("granite-4.0-micro-3b", { status: "downloading", downloadedBytes: 0, totalBytes: 2139410304 });
+        try {
+          const status = await invoke("local_ai_download_model", { modelId: "granite-4.0-micro-3b" });
+          renderModelStatusFor("granite-4.0-micro-3b", status || { status: "installed" });
+          await checkLocalAiRuntimeStatus();
+        } catch (err) {
+          await refreshLocalAiModelStatus();
+        }
+      });
+    }
+
+    if (graniteCancelBtn) {
+      graniteCancelBtn.addEventListener("click", async () => {
+        graniteCancelBtn.disabled = true;
+        try { await invoke("local_ai_cancel_download"); } finally {
+          graniteCancelBtn.disabled = false;
+          await refreshLocalAiModelStatus();
+        }
+      });
+    }
+
+    if (graniteRemoveBtn) {
+      graniteRemoveBtn.addEventListener("click", async () => {
+        if (!(await requestConfirmation("Remove downloaded IBM Granite 4.0 Micro 3B model?"))) return;
+        graniteRemoveBtn.disabled = true;
+        try {
+          await invoke("local_ai_remove_model", { modelId: "granite-4.0-micro-3b" });
+          await refreshLocalAiModelStatus();
+          await checkLocalAiRuntimeStatus();
+        } finally {
+          graniteRemoveBtn.disabled = false;
+        }
+      });
+    }
+
+    if (ministralDownloadBtn) {
+      ministralDownloadBtn.addEventListener("click", async () => {
+        const accepted = await requestConfirmation(
+          "Download offline Mistral Ministral 3 8B Instruct?\n\n" +
+          "This downloads approximately 5.2 GB (Q4_K_M GGUF) from the official mistralai repository. " +
+          "Allow at least 8 GB of free disk space and 8 GB of system memory. " +
+          "The download is resumable and is activated only after SHA-256 verification."
+        );
+        if (!accepted) return;
+        renderModelStatusFor("ministral-3-8b-instruct", { status: "downloading", downloadedBytes: 0, totalBytes: 5198911904 });
+        try {
+          const status = await invoke("local_ai_download_model", { modelId: "ministral-3-8b-instruct" });
+          renderModelStatusFor("ministral-3-8b-instruct", status || { status: "installed" });
+          await checkLocalAiRuntimeStatus();
+        } catch (err) {
+          await refreshLocalAiModelStatus();
+        }
+      });
+    }
+
+    if (ministralCancelBtn) {
+      ministralCancelBtn.addEventListener("click", async () => {
+        ministralCancelBtn.disabled = true;
+        try { await invoke("local_ai_cancel_download"); } finally {
+          ministralCancelBtn.disabled = false;
+          await refreshLocalAiModelStatus();
+        }
+      });
+    }
+
+    if (ministralRemoveBtn) {
+      ministralRemoveBtn.addEventListener("click", async () => {
+        if (!(await requestConfirmation("Remove downloaded Mistral Ministral 3 8B Instruct model?"))) return;
+        ministralRemoveBtn.disabled = true;
+        try {
+          await invoke("local_ai_remove_model", { modelId: "ministral-3-8b-instruct" });
+          await refreshLocalAiModelStatus();
+          await checkLocalAiRuntimeStatus();
+        } finally {
+          ministralRemoveBtn.disabled = false;
+        }
+      });
+    }
+
     if (downloadBtn) {
       downloadBtn.addEventListener("click", async () => {
         const accepted = await requestConfirmation(
@@ -12209,7 +12535,7 @@ If the command is benign or standard administrative activity, state that clearly
           "The download is resumable and is activated only after SHA-256 verification."
         );
         if (!accepted) return;
-        renderLocalAiModelStatus({ status: "downloading", downloadedBytes: 0, totalBytes: 0 });
+        renderLocalAiModelStatus({ status: "downloading", downloadedBytes: 0, totalBytes: 12109566624 });
         try {
           const status = await invoke("local_ai_download_model");
           renderLocalAiModelStatus(status || { status: "installed" });
@@ -12253,7 +12579,8 @@ If the command is benign or standard administrative activity, state that clearly
 
     listen("local-ai-download-progress", (event) => {
       const payload = event && event.payload ? event.payload : {};
-      renderLocalAiModelStatus({ status: "downloading", ...payload });
+      const targetModel = payload.modelId || payload.id || "gpt-oss-20b";
+      renderModelStatusFor(targetModel, { status: "downloading", ...payload });
     }).catch(() => {});
 
     refreshLocalAiModelStatus();

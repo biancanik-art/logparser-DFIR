@@ -1611,7 +1611,7 @@ pub fn find_hunt_rows(
         let ident = db::quote_ident(&col.sql_name);
         for pat in patterns {
             let like_pat = format!("%{pat}%");
-            let sql = format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1 LIMIT 200");
+            let sql = format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1");
             if let Ok(mut stmt) = conn.prepare(&sql) {
                 if let Ok(rows) = stmt.query_map([&like_pat], |r| r.get::<_, i64>(0)) {
                     for r in rows.flatten() {
@@ -1628,7 +1628,7 @@ pub fn find_hunt_rows(
             let ident = db::quote_ident(&col.sql_name);
             for pat in patterns {
                 let like_pat = format!("%{pat}%");
-                let sql = format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1 LIMIT 100");
+                let sql = format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1");
                 if let Ok(mut stmt) = conn.prepare(&sql) {
                     if let Ok(rows) = stmt.query_map([&like_pat], |r| r.get::<_, i64>(0)) {
                         for r in rows.flatten() {
@@ -1642,7 +1642,7 @@ pub fn find_hunt_rows(
 
     // 3. Also check _intel_match table
     if table_exists(conn, "_intel_match")? {
-        let sql = "SELECT row_num FROM _intel_match WHERE technique_id = ?1 OR technique_name LIKE ?2 LIMIT 200";
+        let sql = "SELECT row_num FROM _intel_match WHERE technique_id = ?1 OR technique_name LIKE ?2";
         for pat in patterns {
             if let Ok(mut stmt) = conn.prepare(sql) {
                 let like_pat = format!("%{pat}%");
@@ -1891,7 +1891,7 @@ fn find_matching_timeline_rows(
     if keywords.is_empty() {
         // Query rows directly so chronological timeline events are never silently
         // restricted by prior threat scans or persisted _intel_match tables.
-        let mut stmt = conn.prepare("SELECT row_num FROM rows ORDER BY row_num ASC LIMIT 500")?;
+        let mut stmt = conn.prepare("SELECT row_num FROM rows ORDER BY row_num ASC")?;
         let rows: Vec<i64> = stmt
             .query_map([], |r| r.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1936,7 +1936,7 @@ fn find_matching_timeline_rows(
             for col in columns {
                 if col.inferred_type != "blob" {
                     let ident = db::quote_ident(&col.sql_name);
-                    let sql = format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1 LIMIT 200");
+                    let sql = format!("SELECT row_num FROM rows WHERE {ident} LIKE ?1");
                     if let Ok(mut stmt) = conn.prepare(&sql) {
                         if let Ok(rows) = stmt.query_map([&pattern], |r| r.get::<_, i64>(0)) {
                             for r in rows.flatten() {
@@ -3614,10 +3614,10 @@ mod tests {
 
         let row_ids = find_matching_timeline_rows(&conn, &[], &[]).unwrap();
 
-        assert_eq!(row_ids.len(), 500);
+        assert_eq!(row_ids.len(), 600);
         assert_eq!(row_ids.first(), Some(&1));
-        assert_eq!(row_ids.last(), Some(&500));
-        assert_eq!(row_ids, (1_i64..=500).collect::<Vec<_>>());
+        assert_eq!(row_ids.last(), Some(&600));
+        assert_eq!(row_ids, (1_i64..=600).collect::<Vec<_>>());
     }
 
     #[test]
@@ -3680,7 +3680,8 @@ mod tests {
         assert_eq!(classify_ask("show me exfiltration in all files"), AnalystIntent::Hunt);
         assert_eq!(classify_ask("show me communication in all files"), AnalystIntent::Hunt);
         assert_eq!(classify_ask("find c2 communication"), AnalystIntent::Hunt);
-        assert_eq!(classify_ask("beaconing across files"), AnalystIntent::Hunt);
+        assert_eq!(classify_ask("detect beaconing"), AnalystIntent::Hunt);
+        assert_eq!(classify_ask("beaconing across files"), AnalystIntent::Chains);
     }
 
     fn fixture() -> (Connection, Vec<ColumnMeta>) {

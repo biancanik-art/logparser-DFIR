@@ -183,8 +183,10 @@ fn write_timeline_entry(
         notes,
     ];
 
-    for (col_idx, val) in cols.iter().enumerate() {
-        master_sheet.write_string(*row_idx, col_idx as u16, *val)?;
+    if *row_idx < 1_048_570 {
+        for (col_idx, val) in cols.iter().enumerate() {
+            master_sheet.write_string(*row_idx, col_idx as u16, *val)?;
+        }
     }
 
     let csv_row = cols
@@ -852,7 +854,7 @@ pub fn export_forensic_workbook(
 
             if has_raw_evidence {
                 let mut stmt = conn.prepare(
-                    "SELECT row_num, raw_evidence FROM rows ORDER BY row_num ASC LIMIT 50000",
+                    "SELECT row_num, raw_evidence FROM rows ORDER BY row_num ASC",
                 )?;
                 let rows = stmt.query_map([], |r| {
                     Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?))
@@ -886,7 +888,7 @@ pub fn export_forensic_workbook(
                 if !col_names.is_empty() {
                     let quoted_cols: Vec<String> = col_names.iter().map(|c| db::quote_ident(c)).collect();
                     let select_sql = format!(
-                        "SELECT row_num, {} FROM rows ORDER BY row_num ASC LIMIT 50000",
+                        "SELECT row_num, {} FROM rows ORDER BY row_num ASC",
                         quoted_cols.join(", ")
                     );
                     let mut stmt = conn.prepare(&select_sql)?;
@@ -1035,7 +1037,7 @@ pub fn export_forensic_workbook(
             .unwrap_or(false);
 
         if has_ioc_matches {
-            if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT ioc_type, ioc_value FROM _ioc_matches LIMIT 200") {
+            if let Ok(mut stmt) = conn.prepare("SELECT DISTINCT ioc_type, ioc_value FROM _ioc_matches") {
                 if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))) {
                     for r in rows.flatten() {
                         let (ioc_type, val) = r;
@@ -1678,9 +1680,9 @@ pub fn export_multi_file_forensic_workbook(
 
         if has_raw_evidence {
             let select_sql = if has_row_time {
-                "SELECT r.row_num, r.raw_evidence, rt.utc_text FROM rows r LEFT JOIN _row_time rt ON rt.row_num = r.row_num ORDER BY r.row_num ASC LIMIT 50000"
+                "SELECT r.row_num, r.raw_evidence, rt.utc_text FROM rows r LEFT JOIN _row_time rt ON rt.row_num = r.row_num ORDER BY r.row_num ASC"
             } else {
-                "SELECT r.row_num, r.raw_evidence, NULL FROM rows r ORDER BY r.row_num ASC LIMIT 50000"
+                "SELECT r.row_num, r.raw_evidence, NULL FROM rows r ORDER BY r.row_num ASC"
             };
             if let Ok(mut stmt) = conn.prepare(select_sql) {
                 let rows = stmt.query_map([], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?)))?;
@@ -1718,12 +1720,12 @@ pub fn export_multi_file_forensic_workbook(
             let quoted_cols: Vec<String> = col_names.iter().map(|c| format!("r.{}", db::quote_ident(c))).collect();
             let select_sql = if has_row_time {
                 format!(
-                    "SELECT r.row_num, rt.utc_text, {} FROM rows r LEFT JOIN _row_time rt ON rt.row_num = r.row_num ORDER BY r.row_num ASC LIMIT 50000",
+                    "SELECT r.row_num, rt.utc_text, {} FROM rows r LEFT JOIN _row_time rt ON rt.row_num = r.row_num ORDER BY r.row_num ASC",
                     quoted_cols.join(", ")
                 )
             } else {
                 format!(
-                    "SELECT r.row_num, NULL, {} FROM rows r ORDER BY r.row_num ASC LIMIT 50000",
+                    "SELECT r.row_num, NULL, {} FROM rows r ORDER BY r.row_num ASC",
                     quoted_cols.join(", ")
                 )
             };
@@ -1918,7 +1920,7 @@ pub fn export_multi_file_forensic_workbook(
                 )
                 .unwrap_or(false);
             if has_ioc_matches {
-                if let Ok(mut stmt) = c.prepare("SELECT DISTINCT ioc_type, ioc_value, matched_field, match_kind FROM _ioc_matches LIMIT 2000") {
+                if let Ok(mut stmt) = c.prepare("SELECT DISTINCT ioc_type, ioc_value, matched_field, match_kind FROM _ioc_matches") {
                     if let Ok(rows) = stmt.query_map([], |r| {
                         Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, String>(2)?, r.get::<_, String>(3)?))
                     }) {

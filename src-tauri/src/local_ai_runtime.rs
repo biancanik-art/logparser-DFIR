@@ -1,19 +1,20 @@
 use crate::intel::llm_parser::{
     self, GuidedQueryPlanner, LlmContext, LlmParseResult, ModelMetadata,
 };
-use crate::local_ai_manager::{self, EXPECTED_MODEL_BYTES, EXPECTED_SHA256, FINAL_FILENAME};
+use crate::local_ai_manager::{self, ModelRegistryEntry, EXPECTED_SHA256};
 use anyhow::{bail, Context, Result};
 use reqwest::blocking::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, OpenOptions};
-use std::io::Read;
+use std::io::{BufRead, BufReader, Read};
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
-use tauri::{path::BaseDirectory, AppHandle, Manager};
+use tauri::{path::BaseDirectory, AppHandle, Emitter, Manager};
 
 pub const GPT_OSS_MODEL_NAME: &str = "gpt-oss-20b";
 pub const GPT_OSS_MODEL_VERSION: &str = "MXFP4@ggml-org";
@@ -35,12 +36,26 @@ pub const MAX_RESPONSE_TOKENS: u32 = 2_048;
 pub const CONTEXT_SIZE: u32 = 16_384;
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(180);
 pub const REQUEST_TIMEOUT: Duration = Duration::from_secs(600);
+pub const IDLE_WATCHDOG_TIMEOUT: Duration = Duration::from_secs(300);
+pub const TOTAL_ANALYSIS_TIMEOUT: Duration = Duration::from_secs(900);
 const PLANNER_REQUEST_TIMEOUT: Duration = Duration::from_secs(120);
 const MAX_ERROR_CHARS: usize = 1_024;
 const MAX_STDERR_BYTES: usize = 64 * 1024;
 const MAX_RUNTIME_RESPONSE_BYTES: usize = 4 * 1024 * 1024;
 const MAX_RUNTIME_ERROR_BYTES: usize = 64 * 1024;
 const MAX_JSON_DEPTH: usize = 16;
+
+static ANALYSIS_CANCEL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Token stream event payload emitted live to frontend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TokenStreamEvent {
+    pub request_id: String,
+    pub token: String,
+    pub is_first: bool,
+    pub done: bool,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -106,20 +121,24 @@ struct SupervisorInner {
     child: Option<Child>,
     port: Option<u16>,
     auth_token: Option<String>,
+    active_model_id: Option<String>,
     status: RuntimeStatus,
     last_error: Option<String>,
     key_file: Option<PathBuf>,
+    stderr_tail: Arc<Mutex<VecDeque<u8>>>,
 }
 
 impl SupervisorInner {
-    const fn new() -> Self {
+    fn new() -> Self {
         Self {
             child: None,
             port: None,
             auth_token: None,
+            active_model_id: None,
             status: RuntimeStatus::Stopped,
             last_error: None,
             key_file: None,
+            stderr_tail: Arc::new(Mutex::new(VecDeque::with_capacity(MAX_STDERR_BYTES))),
         }
     }
 }
@@ -131,7 +150,7 @@ pub struct RuntimeSupervisor {
 }
 
 impl RuntimeSupervisor {
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             inner: Mutex::new(SupervisorInner::new()),
             op_lock: Mutex::new(()),
@@ -140,9 +159,10 @@ impl RuntimeSupervisor {
     }
 
     pub fn status(&self, app: &AppHandle) -> RuntimeStatusResponse {
+        let selected = local_ai_manager::get_selected_model_entry();
         let model_installed = (|| {
-            let model_dir = local_ai_manager::get_model_dir(app).ok()?;
-            let final_file = model_dir.join(FINAL_FILENAME);
+            let model_dir = local_ai_manager::get_model_dir_for(app, &selected.directory_name).ok()?;
+            let final_file = model_dir.join(&selected.filename);
             Some(final_file.is_file() && !final_file.is_symlink())
         })()
         .unwrap_or(false);
@@ -163,6 +183,7 @@ impl RuntimeSupervisor {
             }
             guard.port = None;
             guard.auth_token = None;
+            guard.active_model_id = None;
             guard.status = RuntimeStatus::Stopped;
             guard.last_error = Some("Local AI runtime process exited".to_string());
             if let Some(key_file) = guard.key_file.take() {
@@ -177,9 +198,11 @@ impl RuntimeSupervisor {
             RuntimeStatus::Error => "error",
         };
 
+        let model_name = guard.active_model_id.clone().unwrap_or(selected.id);
+
         RuntimeStatusResponse {
             status: status_str.to_string(),
-            model_name: GPT_OSS_MODEL_NAME.to_string(),
+            model_name,
             installed: model_installed,
             error: guard.last_error.clone(),
         }
@@ -196,7 +219,8 @@ impl RuntimeSupervisor {
     }
 
     fn start_locked(&self, app: &AppHandle) -> Result<(u16, String), String> {
-        // Check if already running and healthy
+        let selected = local_ai_manager::get_selected_model_entry();
+        // Check if already running and healthy for selected model
         {
             let mut guard = match self.inner.lock() {
                 Ok(g) => g,
@@ -206,9 +230,10 @@ impl RuntimeSupervisor {
             if let Some(mut child) = guard.child.take() {
                 let port = guard.port;
                 let token = guard.auth_token.clone();
+                let is_same_model = guard.active_model_id.as_deref() == Some(&selected.id);
                 match (child.try_wait(), port, token) {
                     (Ok(None), Some(port), Some(token))
-                        if check_authenticated_runtime_sync(port, &token) =>
+                        if is_same_model && check_authenticated_runtime_sync(port, &token) =>
                     {
                         guard.child = Some(child);
                         return Ok((port, token));
@@ -229,26 +254,27 @@ impl RuntimeSupervisor {
             }
             guard.port = None;
             guard.auth_token = None;
+            guard.active_model_id = None;
             guard.status = RuntimeStatus::Starting;
             guard.last_error = None;
         }
 
         // 1. Resolve model path and perform uncached integrity verification
-        let model_dir = local_ai_manager::get_model_dir(app)?;
-        let model_path = model_dir.join(FINAL_FILENAME);
+        let model_dir = local_ai_manager::get_model_dir_for(app, &selected.directory_name)?;
+        let model_path = model_dir.join(&selected.filename);
         local_ai_manager::validate_regular_model_file(&model_path, &model_dir)?;
 
         let verified = local_ai_manager::verify_model_integrity_uncached(
             &model_path,
-            EXPECTED_SHA256,
-            EXPECTED_MODEL_BYTES,
+            &selected.sha256,
+            selected.byte_size,
         )
         .map_err(|e| format!("Model integrity check failed: {e}"))?;
         if !verified {
-            return Err(
-                "Model integrity check failed: size or SHA-256 does not match the pinned gpt-oss artifact"
-                    .to_string(),
-            );
+            return Err(format!(
+                "Model integrity check failed: size or SHA-256 does not match the pinned {} artifact",
+                selected.display_name
+            ));
         }
 
         // 2. Resolve packaged runtime binary from Tauri resources
@@ -273,7 +299,7 @@ impl RuntimeSupervisor {
         write_narrow_token_file(&key_file, &auth_token)?;
 
         // 5. Build CLI command and spawn process directly (never through a shell)
-        let args = build_llama_server_args(&model_path, port, &key_file);
+        let args = build_llama_server_args_for_model(&selected, &model_path, port, &key_file);
         let mut cmd = Command::new(&binary_path);
         cmd.args(&args)
             .stdin(Stdio::null())
@@ -290,7 +316,17 @@ impl RuntimeSupervisor {
 
         // Drain stderr safely in a background thread to prevent pipe deadlock
         let stderr_pipe = child.stderr.take();
-        let stderr_tail = Arc::new(Mutex::new(VecDeque::<u8>::with_capacity(MAX_STDERR_BYTES)));
+        let stderr_tail = {
+            let guard = match self.inner.lock() {
+                Ok(g) => g,
+                Err(p) => p.into_inner(),
+            };
+            Arc::clone(&guard.stderr_tail)
+        };
+        if let Ok(mut tail) = stderr_tail.lock() {
+            tail.clear();
+        }
+
         if let Some(pipe) = stderr_pipe {
             let tail_clone = Arc::clone(&stderr_tail);
             std::thread::spawn(move || {
@@ -391,6 +427,7 @@ impl RuntimeSupervisor {
             guard.child = Some(child);
             guard.port = Some(port);
             guard.auth_token = Some(auth_token.clone());
+            guard.active_model_id = Some(selected.id);
             guard.status = RuntimeStatus::Ready;
             guard.last_error = None;
             guard.key_file = None;
@@ -443,9 +480,19 @@ impl RuntimeSupervisor {
 
         guard.port = None;
         guard.auth_token = None;
+        guard.active_model_id = None;
         guard.status = RuntimeStatus::Stopped;
         guard.last_error = None;
         Ok(was_running)
+    }
+
+    pub fn get_diagnostics(&self) -> String {
+        let guard = match self.inner.lock() {
+            Ok(g) => g,
+            Err(p) => p.into_inner(),
+        };
+        let raw = extract_stderr_summary(&guard.stderr_tail);
+        redact_sensitive_tokens(&raw)
     }
 
     pub fn get_credentials(&self) -> Result<(u16, String), String> {
@@ -469,18 +516,23 @@ impl RuntimeSupervisor {
     }
 }
 
-pub static GLOBAL_SUPERVISOR: RuntimeSupervisor = RuntimeSupervisor::new();
+pub static GLOBAL_SUPERVISOR: std::sync::LazyLock<RuntimeSupervisor> = std::sync::LazyLock::new(RuntimeSupervisor::new);
 
 // ---------------------------------------------------------------------------
 // Security, Tokens & Filesystem Helpers
 // ---------------------------------------------------------------------------
 
-pub fn build_llama_server_args(model_path: &Path, port: u16, key_file: &Path) -> Vec<String> {
-    vec![
+pub fn build_llama_server_args_for_model(
+    model: &ModelRegistryEntry,
+    model_path: &Path,
+    port: u16,
+    key_file: &Path,
+) -> Vec<String> {
+    let mut args = vec![
         "--model".to_string(),
         model_path.to_string_lossy().to_string(),
         "--alias".to_string(),
-        GPT_OSS_MODEL_NAME.to_string(),
+        model.alias.clone(),
         "--host".to_string(),
         "127.0.0.1".to_string(),
         "--port".to_string(),
@@ -488,15 +540,48 @@ pub fn build_llama_server_args(model_path: &Path, port: u16, key_file: &Path) ->
         "--api-key-file".to_string(),
         key_file.to_string_lossy().to_string(),
         "--offline".to_string(),
-        "--jinja".to_string(),
-        "--reasoning-format".to_string(),
-        "deepseek".to_string(),
         "--ctx-size".to_string(),
-        CONTEXT_SIZE.to_string(),
+        model.context_size.to_string(),
         "--parallel".to_string(),
         "1".to_string(),
-        "--log-disable".to_string(),
-    ]
+    ];
+    let num_threads = std::thread::available_parallelism()
+        .map(|n| (n.get() / 2).max(4))
+        .unwrap_or(4);
+    args.push("--threads".to_string());
+    args.push(num_threads.to_string());
+    args.push("--threads-batch".to_string());
+    args.push(num_threads.to_string());
+    if model.jinja {
+        args.push("--jinja".to_string());
+    }
+    if model.reasoning_format != "none" {
+        args.push("--reasoning-format".to_string());
+        args.push(model.reasoning_format.clone());
+    }
+    args
+}
+
+pub fn build_llama_server_args(model_path: &Path, port: u16, key_file: &Path) -> Vec<String> {
+    let default_entry = local_ai_manager::get_selected_model_entry();
+    let mut args = build_llama_server_args_for_model(&default_entry, model_path, port, key_file);
+    if !args.contains(&"--log-disable".to_string()) {
+        args.push("--log-disable".to_string());
+    }
+    args
+}
+
+pub fn redact_sensitive_tokens(raw: &str) -> String {
+    let re_bearer = match regex::Regex::new(r"(?i)bearer\s+[A-Za-z0-9_\-\.\:]{16,}") {
+        Ok(r) => r,
+        Err(_) => return raw.to_string(),
+    };
+    let re_hex = match regex::Regex::new(r"\b[0-9a-fA-F]{32,64}\b") {
+        Ok(r) => r,
+        Err(_) => return raw.to_string(),
+    };
+    let intermediate = re_bearer.replace_all(raw, "Bearer [REDACTED]");
+    re_hex.replace_all(&intermediate, "[REDACTED_TOKEN]").into_owned()
 }
 
 pub fn pick_unused_loopback_port() -> Result<u16, String> {
@@ -625,7 +710,11 @@ fn check_authenticated_runtime_sync(port: u16, auth_token: &str) -> bool {
         .and_then(serde_json::Value::as_array)
         .is_some_and(|models| {
             models.iter().any(|model| {
-                model.get("id").and_then(serde_json::Value::as_str) == Some(GPT_OSS_MODEL_NAME)
+                if let Some(id) = model.get("id").and_then(serde_json::Value::as_str) {
+                    !id.trim().is_empty()
+                } else {
+                    false
+                }
             })
         })
 }
@@ -956,10 +1045,12 @@ pub fn validate_and_prepare_staged_evidence(
             }
         }
 
-        // Track columns (excluding metadata keys)
-        for (col_key, _) in row_obj {
-            if col_key != "_provenance" && col_key != "fileName" && col_key != "row_num" {
+        // Track columns and strip redundant provenance fields from payload data
+        let mut clean_data = serde_json::Map::new();
+        for (col_key, val) in row_obj {
+            if col_key != "_provenance" && col_key != "fileName" && col_key != "row_num" && col_key != "sheet" && col_key != "_unifiedIndex" {
                 distinct_columns.insert(col_key.clone());
+                clean_data.insert(col_key.clone(), val.clone());
             }
         }
 
@@ -969,7 +1060,7 @@ pub fn validate_and_prepare_staged_evidence(
             file: file_name,
             sheet: sheet_name,
             row_number,
-            data: row_val.clone(),
+            data: serde_json::Value::Object(clean_data),
         });
     }
 
@@ -1169,6 +1260,17 @@ pub async fn local_ai_runtime_stop(app: AppHandle) -> Result<RuntimeStatusRespon
 }
 
 #[tauri::command]
+pub async fn local_ai_runtime_diagnostics() -> Result<String, String> {
+    Ok(GLOBAL_SUPERVISOR.get_diagnostics())
+}
+
+#[tauri::command]
+pub async fn local_ai_cancel_analysis() -> Result<bool, String> {
+    ANALYSIS_CANCEL_REQUESTED.store(true, Ordering::SeqCst);
+    Ok(true)
+}
+
+#[tauri::command]
 pub async fn local_ai_analyze_evidence(
     app: AppHandle,
     request: LocalAnalyzeRequest,
@@ -1180,13 +1282,16 @@ pub async fn local_ai_analyze_evidence(
     let app_clone = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let _inference_guard = GLOBAL_SUPERVISOR.acquire_inference()?;
+        let model = local_ai_manager::get_selected_model_entry();
+        ANALYSIS_CANCEL_REQUESTED.store(false, Ordering::SeqCst);
+
         // start() reuses a healthy child and restarts a stale/dead child.
         let (port, token) = GLOBAL_SUPERVISOR.start(&app_clone)?;
 
         let endpoint = format!("http://127.0.0.1:{port}/v1/chat/completions");
         let client = Client::builder()
-            .timeout(REQUEST_TIMEOUT)
-            .connect_timeout(Duration::from_secs(5))
+            .timeout(TOTAL_ANALYSIS_TIMEOUT)
+            .connect_timeout(Duration::from_secs(10))
             .no_proxy()
             .build()
             .map_err(|e| format!("Building local client failed: {e}"))?;
@@ -1211,46 +1316,154 @@ pub async fn local_ai_analyze_evidence(
         }));
 
         let req_body = serde_json::json!({
-            "model": GPT_OSS_MODEL_NAME,
+            "model": model.alias,
             "messages": messages,
-            "stream": false,
-            "max_tokens": MAX_RESPONSE_TOKENS,
-            "reasoning_effort": "low",
-            "reasoning_format": "deepseek",
+            "stream": true,
+            "max_tokens": model.max_output_tokens,
+            "reasoning_effort": if model.reasoning_format == "deepseek" { "low" } else { "none" },
         });
 
-        let resp = client
+        let request_id = format!(
+            "req_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_millis()
+        );
+
+        let resp_result = client
             .post(&endpoint)
             .bearer_auth(&token)
             .json(&req_body)
-            .send()
-            .map_err(|e| format!("Local AI analysis request failed: {e}"))?;
+            .send();
+
+        let resp = match resp_result {
+            Ok(r) => r,
+            Err(e) => {
+                // If pre-request connection failure, retry at most once after ensuring runtime is restarted
+                let err_str = e.to_string();
+                if err_str.contains("connection refused") || err_str.contains("error sending request") {
+                    let _ = GLOBAL_SUPERVISOR.stop();
+                    let (new_port, new_token) = GLOBAL_SUPERVISOR.start(&app_clone)?;
+                    let new_endpoint = format!("http://127.0.0.1:{new_port}/v1/chat/completions");
+                    client
+                        .post(&new_endpoint)
+                        .bearer_auth(&new_token)
+                        .json(&req_body)
+                        .send()
+                        .map_err(|re| format!("Local AI analysis request failed after retry: {re}"))?
+                } else {
+                    return Err(format!("Local AI analysis request failed: {e}"));
+                }
+            }
+        };
 
         let status = resp.status();
-        let response_limit = if status.is_success() {
-            MAX_RUNTIME_RESPONSE_BYTES
-        } else {
-            MAX_RUNTIME_ERROR_BYTES
-        };
-        let response_body = read_bounded_response(resp, response_limit)?;
-
         if !status.is_success() {
+            let response_body = read_bounded_response(resp, MAX_RUNTIME_ERROR_BYTES)?;
             let detail = bounded_diagnostic(&String::from_utf8_lossy(&response_body));
             return Err(format!("Local AI runtime returned HTTP {status}: {detail}"));
         }
 
-        let decoded: ChatCompletionResponse = serde_json::from_slice(&response_body)
-            .map_err(|e| format!("Failed to parse runtime response JSON: {e}"))?;
+        let mut reader = BufReader::new(resp);
+        let mut line = String::new();
+        let mut raw_content = String::new();
+        let mut last_activity = Instant::now();
+        let mut is_first = true;
 
-        let raw_content = extract_final_content(decoded).map_err(|e| e.to_string())?;
+        loop {
+            if ANALYSIS_CANCEL_REQUESTED.load(Ordering::SeqCst) {
+                return Err("Local AI analysis cancelled by examiner.".to_string());
+            }
+
+            if last_activity.elapsed() > IDLE_WATCHDOG_TIMEOUT {
+                return Err(format!(
+                    "Local AI inference timed out: no output received for {} seconds (idle watchdog).",
+                    IDLE_WATCHDOG_TIMEOUT.as_secs()
+                ));
+            }
+
+            line.clear();
+            let _bytes_read = match reader.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(n) => n,
+                Err(e) => return Err(format!("Stream read error from local AI runtime: {e}")),
+            };
+
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+
+            if let Some(rest) = trimmed.strip_prefix("data: ") {
+                let rest = rest.trim();
+                if rest == "[DONE]" {
+                    break;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(rest) {
+                    if let Some(choices) = val.get("choices").and_then(|v| v.as_array()) {
+                        if let Some(first_choice) = choices.get(0) {
+                            if let Some(delta) = first_choice.get("delta") {
+                                let text_piece = delta
+                                    .get("content")
+                                    .and_then(|c| c.as_str())
+                                    .or_else(|| delta.get("reasoning_content").and_then(|c| c.as_str()));
+                                if let Some(piece) = text_piece {
+                                    if !piece.is_empty() {
+                                        last_activity = Instant::now();
+                                        raw_content.push_str(piece);
+                                        let _ = app_clone.emit(
+                                            "local-ai-token-stream",
+                                            TokenStreamEvent {
+                                                request_id: request_id.clone(),
+                                                token: piece.to_string(),
+                                                is_first,
+                                                done: false,
+                                            },
+                                        );
+                                        is_first = false;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            } else if trimmed.starts_with('{') {
+                if let Ok(decoded) = serde_json::from_str::<ChatCompletionResponse>(trimmed) {
+                    if let Ok(c) = extract_final_content(decoded) {
+                        raw_content = c;
+                        break;
+                    }
+                }
+            }
+        }
+
+        if ANALYSIS_CANCEL_REQUESTED.load(Ordering::SeqCst) {
+            return Err("Local AI analysis cancelled by examiner.".to_string());
+        }
+
+        if raw_content.trim().is_empty() {
+            return Err("Local AI runtime returned empty analysis content.".to_string());
+        }
+
+        let _ = app_clone.emit(
+            "local-ai-token-stream",
+            TokenStreamEvent {
+                request_id: request_id.clone(),
+                token: String::new(),
+                is_first: false,
+                done: true,
+            },
+        );
+
         let (final_text, citations) = post_process_citations(&raw_content, &lookup)?;
 
         Ok(LocalAnalyzeResponse {
             text: final_text,
             history_text: raw_content,
-            provider: GPT_OSS_PROVIDER.to_string(),
-            model: GPT_OSS_MODEL_NAME.to_string(),
-            model_version: GPT_OSS_MODEL_VERSION.to_string(),
+            provider: model.family.clone(),
+            model: model.id.clone(),
+            model_version: model.quantization.clone(),
             citations,
         })
     })

@@ -275,6 +275,7 @@ function bootAssistantTestApp({ fetchHandler, invokeHandler, confirmResult = tru
   FakeTabulator.latest = null;
   const fetchCalls = [];
   const tauriCalls = [];
+  const eventListeners = new Map();
   const initializationErrors = [];
   const document = new FakeDocument(strictDom ? INDEX_ELEMENT_IDS : null);
   const localStorage = new FakeStorage();
@@ -364,7 +365,14 @@ function bootAssistantTestApp({ fetchHandler, invokeHandler, confirmResult = tru
           return null;
         },
       },
-      event: { listen: async () => () => {} },
+      event: {
+        listen: async (eventName, callback) => {
+          const list = eventListeners.get(eventName) || [];
+          list.push(callback);
+          eventListeners.set(eventName, list);
+          return () => {};
+        },
+      },
     },
     __logParserDebug: {},
     confirm: () => confirmResult,
@@ -405,6 +413,9 @@ function bootAssistantTestApp({ fetchHandler, invokeHandler, confirmResult = tru
     debug: window.__logParserDebug,
     fetchCalls,
     tauriCalls,
+    emitEvent: (evt, payload) => {
+      for (const cb of eventListeners.get(evt) || []) cb({ event: evt, payload });
+    },
     sandbox,
     localStorage,
     sessionStorage,
@@ -1283,4 +1294,166 @@ test("36. A stopped local runtime is started before the analysis request", async
   const analyzeIndex = commandOrder.indexOf("local_ai_analyze_evidence");
   assert.ok(statusIndex >= 0 && startIndex > statusIndex && analyzeIndex > startIndex);
   assert.equal(commandOrder.filter((command) => command === "local_ai_analyze_evidence").length, 1);
+});
+
+test("37. Transport error recovery rejects ambiguous inference timeouts without auto-retry (R-03)", () => {
+  const app = bootAssistantTestApp();
+  assert.equal(app.debug.isRecoverableLocalAiTransportErrorForTest("Inference timed out after 90 seconds"), false);
+  assert.equal(app.debug.isRecoverableLocalAiTransportErrorForTest("Operation timeout: idle watchdog"), false);
+  assert.equal(app.debug.isRecoverableLocalAiTransportErrorForTest("Context deadline exceeded"), false);
+  assert.equal(app.debug.isRecoverableLocalAiTransportErrorForTest("error sending request for url: connection refused"), true);
+  assert.equal(app.debug.isRecoverableLocalAiTransportErrorForTest("connection reset by peer"), true);
+});
+
+test("38. Local model selection invokes local_ai_select_model and updates UI state", async () => {
+  const selectedCalls = [];
+  const app = bootAssistantTestApp({
+    invokeHandler: async (command, args) => {
+      if (command === "local_ai_select_model") {
+        selectedCalls.push(args);
+        return {
+          id: args.modelId,
+          displayName: args.modelId,
+          status: "installed",
+          isSelected: true,
+        };
+      }
+      return undefined;
+    },
+  });
+
+  const selectEl = app.document.getElementById("ai-local-model-select");
+  assert.ok(selectEl, "Model select dropdown must exist in #ai-local-model-bar");
+
+  selectEl.value = "granite-4.0-micro-3b";
+  selectEl.dispatchEvent({ type: "change" });
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(selectedCalls.length, 1);
+  assert.equal(selectedCalls[0].modelId, "granite-4.0-micro-3b");
+  assert.equal(app.document.getElementById("ai-local-model-name").textContent, "granite-4.0-micro-3b");
+});
+
+test("39. Multi-model registry in Settings invokes download and remove with explicit modelId", async () => {
+  const downloadCalls = [];
+  const removeCalls = [];
+  const app = bootAssistantTestApp({
+    confirmResult: true,
+    invokeHandler: async (command, args) => {
+      if (command === "local_ai_download_model") {
+        downloadCalls.push(args);
+        return { status: "downloading", id: (args && args.modelId) || "gpt-oss-20b" };
+      }
+      if (command === "local_ai_remove_model") {
+        removeCalls.push(args);
+        return { status: "notInstalled", id: (args && args.modelId) || "gpt-oss-20b" };
+      }
+      return undefined;
+    },
+  });
+
+  // Granite download
+  const graniteBtn = app.document.getElementById("local-ai-granite-download-btn");
+  assert.ok(graniteBtn, "Granite download button must exist");
+  graniteBtn.click();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(downloadCalls.length, 1);
+  assert.equal(downloadCalls[0].modelId, "granite-4.0-micro-3b");
+
+  // Ministral download
+  const ministralBtn = app.document.getElementById("local-ai-ministral-download-btn");
+  assert.ok(ministralBtn, "Ministral download button must exist");
+  ministralBtn.click();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(downloadCalls.length, 2);
+  assert.equal(downloadCalls[1].modelId, "ministral-3-8b-instruct");
+});
+
+test("40. Diagnostics button invokes local_ai_runtime_diagnostics with redacted logs", async () => {
+  let diagCalled = false;
+  const app = bootAssistantTestApp({
+    invokeHandler: async (command) => {
+      if (command === "local_ai_runtime_diagnostics") {
+        diagCalled = true;
+        return "llama_server_start: listening on 127.0.0.1:49152\nAuthorization: Bearer <redacted>\n";
+      }
+      return undefined;
+    },
+  });
+
+  const diagBtn = app.document.getElementById("local-ai-diagnostics-btn");
+  assert.ok(diagBtn, "Diagnostics button must exist");
+  diagBtn.click();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assert.equal(diagCalled, true, "Must invoke local_ai_runtime_diagnostics");
+  const modal = app.document.getElementById("local-ai-diagnostics-modal");
+  assert.equal(modal.classList.contains("hidden"), false);
+  const content = app.document.getElementById("local-ai-diagnostics-content");
+  assert.match(content.textContent, /listening on 127\.0\.0\.1/);
+});
+
+test("41. Cancel inference button invokes local_ai_cancel_analysis", async () => {
+  let cancelCalled = false;
+  const app = bootAssistantTestApp({
+    invokeHandler: async (command) => {
+      if (command === "local_ai_cancel_analysis") {
+        cancelCalled = true;
+        return true;
+      }
+      return undefined;
+    },
+  });
+
+  const cancelBtn = app.document.getElementById("ai-cancel-analysis-btn");
+  assert.ok(cancelBtn, "Cancel inference button must exist");
+  cancelBtn.click();
+  await Promise.resolve();
+
+  assert.equal(cancelCalled, true, "Must invoke local_ai_cancel_analysis");
+});
+
+test("42. Download progress events route accurately by id/modelId and do not fall back to gpt-oss-20b", async () => {
+  const app = bootAssistantTestApp();
+
+  const gptStateEl = app.document.getElementById("local-ai-model-state");
+  const ministralStateEl = app.document.getElementById("local-ai-ministral-state");
+  const ministralDetailEl = app.document.getElementById("local-ai-ministral-detail");
+  const ministralProgressText = app.document.getElementById("local-ai-ministral-progress-text");
+  const graniteStateEl = app.document.getElementById("local-ai-granite-state");
+  const graniteDetailEl = app.document.getElementById("local-ai-granite-detail");
+
+  // Initial state should not be downloading
+  assert.notEqual(gptStateEl.textContent, "Downloading…");
+  assert.notEqual(ministralStateEl.textContent, "Downloading…");
+
+  // Emit progress for ministral using 'id' (from Rust backend)
+  app.emitEvent("local-ai-download-progress", {
+    id: "ministral-3-8b-instruct",
+    status: "downloading",
+    downloadedBytes: 2599455952,
+    totalBytes: 5198911904,
+    percent: 50.0,
+  });
+
+  // Ministral card must update, gpt-oss must NOT update
+  assert.equal(ministralStateEl.textContent, "Downloading…");
+  assert.match(ministralDetailEl.textContent, /Downloading .* of .*/);
+  assert.match(ministralProgressText.textContent, /50\.0%/);
+  assert.notEqual(gptStateEl.textContent, "Downloading…", "gpt-oss card must not receive ministral progress");
+
+  // Emit progress for granite using 'modelId'
+  app.emitEvent("local-ai-download-progress", {
+    modelId: "granite-4.0-micro-3b",
+    status: "downloading",
+    downloadedBytes: 1069705152,
+    totalBytes: 2139410304,
+    percent: 50.0,
+  });
+
+  assert.equal(graniteStateEl.textContent, "Downloading…");
+  assert.match(graniteDetailEl.textContent, /Downloading .* of .*/);
+  assert.notEqual(gptStateEl.textContent, "Downloading…", "gpt-oss card must not receive granite progress");
 });
