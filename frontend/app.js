@@ -1200,6 +1200,17 @@
   async function filterGridByIntel(filterType, filterValue, displayName) {
     if (sheetLoadInFlight || tableTransitionInFlight()) return null;
 
+    let chainObj = null;
+    let chainRows = [];
+    if (filterType === "chain") {
+      if (Array.isArray(filterValue)) {
+        chainRows = filterValue;
+      } else if (filterValue && typeof filterValue === "object") {
+        chainObj = filterValue;
+        chainRows = Array.isArray(filterValue.sampleRows) ? filterValue.sampleRows : [];
+      }
+    }
+
     if (filterType === "technique" || filterType === "tactic" || filterType === "all") {
       const allEvents = intelScanSummaryResult?.correlatedEvents || [];
       let matchingEvents = allEvents;
@@ -1232,6 +1243,54 @@
         const targetIdx = loadedFiles.findIndex((f) => f.path === participatingFiles[0]);
         if (targetIdx !== -1) {
           await switchLoadedFile(targetIdx);
+          while (activeDataRequest !== null || sheetLoadInFlight) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        }
+      }
+    } else if (filterType === "chain") {
+      const allEvents = intelScanSummaryResult?.correlatedEvents || [];
+      let targetPath = chainObj?.filePath || null;
+      let targetFileName = chainObj?.fileName || null;
+
+      // Fallback: If targetPath is not directly present, find it via correlatedEvents matching any of the sample rows
+      if (!targetPath && allEvents.length > 0 && chainRows.length > 0) {
+        const rowSet = new Set(chainRows);
+        const matchEv = allEvents.find((e) => rowSet.has(e.rowNum));
+        if (matchEv) {
+          targetPath = matchEv.path;
+          targetFileName = matchEv.fileName;
+        }
+      }
+
+      // If targetPath is identified and doesn't match currentPath, switch to that file first
+      if (targetPath && targetPath !== currentPath) {
+        const normTarget = String(targetPath).replace(/\\/g, "/").toLowerCase();
+        const targetIdx = (loadedFiles || []).findIndex(
+          (f) => f.path === targetPath ||
+                 String(f.path).replace(/\\/g, "/").toLowerCase() === normTarget ||
+                 (targetFileName && f.fileName === targetFileName)
+        );
+        if (targetIdx !== -1) {
+          await switchLoadedFile(targetIdx);
+          while (activeDataRequest !== null || sheetLoadInFlight) {
+            await new Promise((resolve) => setTimeout(resolve, 20));
+          }
+        } else {
+          // File not in active loadedFiles list - fallback to rendering unified correlated grid with chain's events
+          const rowSet = new Set(chainRows);
+          const chainEvents = allEvents.filter((e) => (!targetPath || e.path === targetPath) && rowSet.has(e.rowNum));
+          if (chainEvents.length > 0) {
+            return renderUnifiedCorrelatedGrid(
+              chainEvents,
+              displayName || `Attack Chain Evidence (${chainEvents.length} events)`
+            );
+          }
+        }
+      } else if (!targetPath && (loadedFiles || []).length === 1 && loadedFiles[0].path !== currentPath) {
+        await switchLoadedFile(0);
+        while (activeDataRequest !== null || sheetLoadInFlight) {
+          await new Promise((resolve) => setTimeout(resolve, 20));
         }
       }
     }
@@ -1260,9 +1319,10 @@
       spec.expression = { type: "intelTechnique", id: filterValue };
       gridFilterDescription = displayName || `MITRE Technique: ${filterValue}`;
     } else if (filterType === "chain" || filterType === "rows") {
-      if (Array.isArray(filterValue) && filterValue.length > 0) {
-        spec.expression = { type: "rowIds", values: filterValue };
-        gridFilterDescription = displayName || `Evidence (${filterValue.length} rows)`;
+      const rowsToFilter = filterType === "chain" ? chainRows : filterValue;
+      if (Array.isArray(rowsToFilter) && rowsToFilter.length > 0) {
+        spec.expression = { type: "rowIds", values: rowsToFilter };
+        gridFilterDescription = displayName || `Evidence (${rowsToFilter.length} rows)`;
       }
     } else if (filterType === "all") {
       spec.expression = { type: "intelAny" };
@@ -1273,8 +1333,8 @@
     switchTab("tab-grid");
     updateGridActiveFilterBar();
     guidedResetBtn.classList.remove("hidden");
-    guidedResetBtn.textContent = `✕ Clear Filter (${displayName || "Filtered"})`;
-    aiSearchAvailability.textContent = `Filtered to ${displayName || filterType}`;
+    guidedResetBtn.textContent = `✕ Clear Filter (${gridFilterDescription || displayName || "Filtered"})`;
+    aiSearchAvailability.textContent = `Filtered to ${gridFilterDescription || displayName || filterType}`;
     aiSearchAvailability.classList.add("ready");
 
     const page = await refreshData();
@@ -2626,10 +2686,11 @@
 
         const sub = document.createElement("div");
         sub.className = "intel-card-sub";
+        const fileInfo = chain.fileName ? `File: ${chain.fileName} | ` : "";
         const hostInfo = chain.host ? `Host/Entity: ${chain.host} | ` : "";
         const userInfo = chain.user ? `User: ${chain.user} | ` : "";
         const techList = (chain.techniqueNames || []).slice(0, 3).join(", ");
-        sub.textContent = `${hostInfo}${userInfo}Rows ${chain.firstRow}–${chain.lastRow} (Score: ${chain.score}) • Techniques: ${techList}`;
+        sub.textContent = `${fileInfo}${hostInfo}${userInfo}Rows ${chain.firstRow}–${chain.lastRow} (Score: ${chain.score}) • Techniques: ${techList}`;
 
         left.append(flow, sub);
 
@@ -2640,13 +2701,13 @@
         drillBtn.innerHTML = `🔍 View Chain (${chain.rowCount} rows)`;
         drillBtn.addEventListener("click", (e) => {
           e.stopPropagation();
-          filterGridByIntel("chain", chain.sampleRows, `Attack Chain #${idx + 1}`);
+          filterGridByIntel("chain", chain, `Attack Chain #${idx + 1}`);
         });
         right.appendChild(drillBtn);
 
         card.append(left, right);
         card.addEventListener("click", () => {
-          filterGridByIntel("chain", chain.sampleRows, `Attack Chain #${idx + 1}`);
+          filterGridByIntel("chain", chain, `Attack Chain #${idx + 1}`);
         });
         chainList.appendChild(card);
       });

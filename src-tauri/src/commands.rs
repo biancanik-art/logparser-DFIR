@@ -1619,7 +1619,7 @@ pub async fn scan_intel_matches(
         if columns_to_scan.is_empty() {
             return Err("no columns available for threat enrichment".to_string());
         }
-        matcher::scan_connection_with_options(
+        let mut summary = matcher::scan_connection_with_options(
             &mut conn,
             &columns_to_scan,
             include_bec,
@@ -1634,7 +1634,19 @@ pub async fn scan_intel_matches(
                 );
             },
         )
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+
+        if let Ok(info) = db::load_import_info(&conn) {
+            let file_name = Path::new(&info.source_path)
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| info.source_path.clone());
+            for chain in &mut summary.chains {
+                chain.file_path = Some(info.source_path.clone());
+                chain.file_name = Some(file_name.clone());
+            }
+        }
+        Ok(summary)
     })
     .await
     .map_err(|e| format!("intel scan task join error: {e}"))?
@@ -3655,7 +3667,9 @@ where
                     entry.row_count += tech.row_count;
                 }
 
-                for chain in summary.chains {
+                for mut chain in summary.chains {
+                    chain.file_path = Some(target.path.clone());
+                    chain.file_name = Some(file_name.clone());
                     all_chains.push(chain);
                 }
 
@@ -3709,6 +3723,10 @@ where
             (None, None) => a.file_name.cmp(&b.file_name).then(a.row_num.cmp(&b.row_num)),
         }
     });
+
+    for (index, chain) in all_chains.iter_mut().enumerate() {
+        chain.chain_id = (index as i64) + 1;
+    }
 
     Ok(MultiFileIntelSummary {
         total_files_scanned,

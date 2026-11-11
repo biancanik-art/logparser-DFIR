@@ -2016,3 +2016,123 @@ test("hunt export buttons separate hunted timeline, searched IOCs, and full case
   assert.equal(exportForensicCalls.length, 1, "export_forensic_workbook called");
 });
 
+test("filterGridByIntel switches file and filters Evidence Grid when attack chain is clicked", async () => {
+  let switchedTo = null;
+  let queryRowsSpecs = [];
+  const app = bootApp({
+    commandHandlers: {
+      import_sheet: async (args) => {
+        switchedTo = args.path;
+        return {
+          rowCount: 25,
+          fromCache: false,
+          columns: [{ originalName: "Raw", sqlName: "raw" }],
+        };
+      },
+      query_rows: async (args) => {
+        queryRowsSpecs.push(args.spec);
+        return {
+          rows: [{ row_num: 10, raw: "evil command 1" }, { row_num: 12, raw: "evil command 2" }],
+          totalRows: 2,
+          hasMore: false,
+        };
+      },
+    },
+  });
+  await loadFixture(app);
+
+  const loaded = app.debug.getLoadedFilesForTest();
+  loaded.push({
+    path: "C:\\data\\compromised_host.evtx",
+    sheet: "Events",
+    name: "compromised_host.evtx",
+    rowCount: 25,
+  });
+
+  const attackChain = {
+    chainId: 1,
+    filePath: "C:\\data\\compromised_host.evtx",
+    fileName: "compromised_host.evtx",
+    firstRow: 10,
+    lastRow: 12,
+    rowCount: 2,
+    sampleRows: [10, 12],
+    host: "WORKSTATION-01",
+    user: "SYSTEM",
+    tacticNames: ["Execution", "Persistence", "Privilege Escalation"],
+    techniqueNames: ["T1059.001", "T1547.001"],
+    score: 90,
+  };
+
+  await app.debug.filterGridByIntelForTest("chain", attackChain, "Attack Chain #1");
+  await settleFrontend();
+
+  console.log("queryRowsSpecs count:", queryRowsSpecs.length, JSON.stringify(queryRowsSpecs.map(s => s.expression)));
+  assert.equal(switchedTo, "C:\\data\\compromised_host.evtx");
+  const matchingSpec = queryRowsSpecs.find(s => s.expression && s.expression.type === "rowIds");
+  assert.ok(matchingSpec, "query_rows was called with rowIds expression");
+  assert.equal(matchingSpec.expression.type, "rowIds");
+  assert.deepEqual([...matchingSpec.expression.values], [10, 12]);
+});
+
+test("filterGridByIntel resolves file from correlatedEvents when attack chain filePath is missing", async () => {
+  let switchedTo = null;
+  let queryRowsSpecs = [];
+  const app = bootApp({
+    commandHandlers: {
+      import_sheet: async (args) => {
+        switchedTo = args.path;
+        return {
+          rowCount: 50,
+          fromCache: false,
+          columns: [{ originalName: "Raw", sqlName: "raw" }],
+        };
+      },
+      query_rows: async (args) => {
+        queryRowsSpecs.push(args.spec);
+        return {
+          rows: [{ row_num: 100, raw: "chain row" }],
+          totalRows: 1,
+          hasMore: false,
+        };
+      },
+    },
+  });
+  await loadFixture(app);
+
+  const loaded = app.debug.getLoadedFilesForTest();
+  loaded.push({
+    path: "C:\\logs\\Security.evtx",
+    sheet: "Events",
+    name: "Security.evtx",
+    rowCount: 50,
+  });
+
+  app.debug.setIntelScanSummaryResultForTest({
+    correlatedEvents: [
+      {
+        fileName: "Security.evtx",
+        path: "C:\\logs\\Security.evtx",
+        rowNum: 100,
+        mitreTags: ["Execution"],
+      },
+    ],
+  });
+
+  // Legacy call or chain object missing filePath
+  const legacyChain = {
+    sampleRows: [100],
+    rowCount: 1,
+  };
+
+  await app.debug.filterGridByIntelForTest("chain", legacyChain, "Attack Chain #2");
+  await settleFrontend();
+
+  assert.equal(switchedTo, "C:\\logs\\Security.evtx");
+  const matchingSpec = queryRowsSpecs.find(s => s.expression && s.expression.type === "rowIds");
+  assert.ok(matchingSpec, "query_rows was called with rowIds expression");
+  assert.equal(matchingSpec.expression.type, "rowIds");
+  assert.deepEqual([...matchingSpec.expression.values], [100]);
+});
+
+

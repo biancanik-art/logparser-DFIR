@@ -1,6 +1,6 @@
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 /// Two matched events belong to the same chain when they occur on the same host within this
@@ -10,11 +10,11 @@ const CHAIN_WINDOW_MS: i64 = 60 * 60 * 1000;
 /// host is ordinary keyword noise, three is a story.
 const MIN_CHAIN_TACTICS: usize = 3;
 const MAX_CHAIN_EVENTS: i64 = 200_000;
-const MAX_SAMPLE_ROWS: usize = 50;
+const MAX_SAMPLE_ROWS: usize = 1000;
 const MAX_TECHNIQUE_NAMES: usize = 8;
 const MAX_PUBLISHED_CHAINS: usize = 200;
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IntelChainSummary {
     pub chain_id: i64,
@@ -31,6 +31,10 @@ pub struct IntelChainSummary {
     pub tactic_names: Vec<String>,
     pub technique_names: Vec<String>,
     pub sample_rows: Vec<i64>,
+    #[serde(default)]
+    pub file_path: Option<String>,
+    #[serde(default)]
+    pub file_name: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -191,6 +195,8 @@ fn build_chain(window: &[ChainEvent]) -> Option<IntelChainSummary> {
     distinct_rows.sort_unstable();
     distinct_rows.dedup();
 
+    let sample_rows: Vec<i64> = distinct_rows.iter().take(MAX_SAMPLE_ROWS).copied().collect();
+
     Some(IntelChainSummary {
         chain_id: 0,
         host: window[0].host.clone(),
@@ -207,6 +213,8 @@ fn build_chain(window: &[ChainEvent]) -> Option<IntelChainSummary> {
         tactic_names,
         technique_names,
         sample_rows,
+        file_path: None,
+        file_name: None,
     })
 }
 
